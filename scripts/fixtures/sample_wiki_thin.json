@@ -1,0 +1,44 @@
+{
+  "ticker": "THIN",
+  "company_name": "Thinly Covered Micro-Cap Inc",
+  "sector": "Unknown / Unclassified",
+  "exchange": "OTC",
+  "as_of_timestamp": "2026-08-01T22:00:00Z",
+  "overview_text": "Limited public information available. Company profile could not be fully resolved from the data provider.",
+  "key_metrics": {
+    "market_cap_usd": 18000000,
+    "pe_ratio": null,
+    "forward_pe": null,
+    "revenue_ttm_usd": null,
+    "revenue_growth_yoy_pct": null,
+    "gross_margin_pct": null,
+    "free_cash_flow_ttm_usd": null,
+    "debt_to_equity": null
+  },
+  "price_summary": {
+    "last_close": 1.14,
+    "change_1d_pct": -3.4,
+    "change_1m_pct": 41.0,
+    "change_3m_pct": -22.0,
+    "change_1y_pct": null,
+    "vs_50d_ma_pct": null,
+    "vs_200d_ma_pct": null
+  },
+  "recent_swing_levels": {
+    "high_20d": 1.61,
+    "low_20d": 0.79,
+    "high_60d": 1.61,
+    "low_60d": 0.55
+  },
+  "financials_summary_last_4_periods": [],
+  "news_digest_last_6": [
+    {
+      "headline": "Thinly Covered Micro-Cap Inc mentioned in small-cap roundup article",
+      "source": "Obscure Finance Blog",
+      "published_at": "2026-05-10T00:00:00Z",
+      "sentiment": "neutral",
+      "url": "https://example.com/news/thin-roundup-mention"
+    }
+  ],
+  "risks_notes_text": "No fundamentals data available from the primary or fallback provider for the last 4 reporting periods. Price action shows a 41% one-month spike against a 22% three-month decline, suggesting high volatility and thin/illiquid trading. Insufficient data to assess business quality."
+}

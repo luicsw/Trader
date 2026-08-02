@@ -1,0 +1,84 @@
+{
+  "ticker": "ACME",
+  "company_name": "Acme Robotics Corp",
+  "sector": "Industrials — Automation",
+  "exchange": "NASDAQ",
+  "as_of_timestamp": "2026-08-01T22:00:00Z",
+  "overview_text": "Acme Robotics designs and manufactures warehouse automation robots and the software that coordinates them. Roughly 70% of revenue comes from recurring software/subscription fees attached to hardware already deployed; the remainder is one-time hardware sales. Main customers are mid-size logistics and e-commerce fulfillment operators.",
+  "key_metrics": {
+    "market_cap_usd": 4200000000,
+    "pe_ratio": 31.2,
+    "forward_pe": 24.8,
+    "revenue_ttm_usd": 610000000,
+    "revenue_growth_yoy_pct": 18.4,
+    "gross_margin_pct": 52.1,
+    "free_cash_flow_ttm_usd": 41000000,
+    "debt_to_equity": 0.35
+  },
+  "price_summary": {
+    "last_close": 87.42,
+    "change_1d_pct": 1.1,
+    "change_1m_pct": 6.3,
+    "change_3m_pct": -4.7,
+    "change_1y_pct": 22.9,
+    "vs_50d_ma_pct": 3.2,
+    "vs_200d_ma_pct": 9.8
+  },
+  "recent_swing_levels": {
+    "high_20d": 91.80,
+    "low_20d": 83.10,
+    "high_60d": 96.40,
+    "low_60d": 79.55
+  },
+  "financials_summary_last_4_periods": [
+    {"period": "Q1 2026", "revenue_usd": 158000000, "net_income_usd": 9200000, "eps": 0.41},
+    {"period": "Q4 2025", "revenue_usd": 151000000, "net_income_usd": 7100000, "eps": 0.33},
+    {"period": "Q3 2025", "revenue_usd": 149000000, "net_income_usd": 6800000, "eps": 0.32},
+    {"period": "Q2 2025", "revenue_usd": 142000000, "net_income_usd": 5900000, "eps": 0.28}
+  ],
+  "news_digest_last_6": [
+    {
+      "headline": "Acme Robotics announces new fulfillment contract with regional grocery chain",
+      "source": "Reuters",
+      "published_at": "2026-07-29T14:00:00Z",
+      "sentiment": "positive",
+      "url": "https://example.com/news/acme-grocery-contract"
+    },
+    {
+      "headline": "Acme Robotics beats Q1 earnings estimates, raises full-year guidance",
+      "source": "Bloomberg",
+      "published_at": "2026-07-22T13:30:00Z",
+      "sentiment": "positive",
+      "url": "https://example.com/news/acme-q1-beat"
+    },
+    {
+      "headline": "Competitor launches lower-cost robotics platform targeting small warehouses",
+      "source": "TechCrunch",
+      "published_at": "2026-07-15T09:00:00Z",
+      "sentiment": "negative",
+      "url": "https://example.com/news/competitor-launch"
+    },
+    {
+      "headline": "Acme Robotics CFO to depart, successor named from within",
+      "source": "Reuters",
+      "published_at": "2026-07-02T11:00:00Z",
+      "sentiment": "neutral",
+      "url": "https://example.com/news/acme-cfo-departure"
+    },
+    {
+      "headline": "Supply chain analysts flag component shortage risk for robotics sector",
+      "source": "Industry Weekly",
+      "published_at": "2026-06-25T08:00:00Z",
+      "sentiment": "negative",
+      "url": "https://example.com/news/component-shortage"
+    },
+    {
+      "headline": "Acme Robotics expands software partnership with major cloud provider",
+      "source": "Bloomberg",
+      "published_at": "2026-06-10T10:00:00Z",
+      "sentiment": "positive",
+      "url": "https://example.com/news/acme-cloud-partnership"
+    }
+  ],
+  "risks_notes_text": "Customer concentration: top 5 customers account for ~38% of revenue. Recent CFO departure adds near-term execution uncertainty. Sector faces a flagged component-shortage risk that could pressure hardware margins over the next 1-2 quarters. Valuation (31x trailing P/E) is above the industrials-automation peer median of ~22x."
+}

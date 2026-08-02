@@ -1,0 +1,86 @@
+{
+  "ticker": "AAPL",
+  "company_name": "Apple Inc.",
+  "sector": "Technology — Consumer Electronics",
+  "exchange": "NASDAQ",
+  "as_of_timestamp": "2026-08-02T12:00:00Z",
+  "overview_text": "Apple designs, manufactures, and markets iPhone, Mac, iPad, wearables, and services (App Store, iCloud, Apple Music, etc.). This snapshot uses real publicly reported data gathered via web search on 2026-08-02, not a live data feed, so treat exact intraday figures as approximate where noted below. Apple reported record fiscal Q3 2026 (June quarter) results on 2026-07-30 — its outgoing CEO Tim Cook's final earnings call before transitioning to executive chairman on 2026-09-01, handing the CEO role to John Ternus (SVP of Hardware Engineering, ~25-year Apple veteran). Despite beating estimates on revenue and EPS, shares fell roughly 7% the next trading day on weak forward guidance and a Services/Greater China miss.",
+  "key_metrics": {
+    "market_cap_usd": 4470000000000,
+    "pe_ratio": 40.3,
+    "forward_pe": null,
+    "revenue_ttm_usd": 466900000000,
+    "revenue_growth_yoy_pct": 16.0,
+    "gross_margin_pct": 48.65,
+    "free_cash_flow_ttm_usd": 136680000000,
+    "debt_to_equity": 1.54
+  },
+  "price_summary": {
+    "last_close": 308.91,
+    "change_1d_pct": -7.35,
+    "change_1m_pct": -5.53,
+    "change_3m_pct": 8.4,
+    "change_1y_pct": 53.2,
+    "vs_50d_ma_pct": null,
+    "vs_200d_ma_pct": null,
+    "note": "change_1d_pct is the post-earnings reaction day (2026-07-30 to 2026-07-31), not a typical daily move. vs_50d/200d MA and exact daily closes were not reliably available from news-search sources — left null rather than guessed; a production version of this tool would pull these directly from the price_bars table (real OHLCV via Finnhub/Alpha Vantage), not reconstruct them from news commentary."
+  },
+  "recent_swing_levels": {
+    "high_20d": 344.57,
+    "low_20d": 308.91,
+    "high_60d": 344.57,
+    "low_60d": 285.0,
+    "note": "Approximate, reconstructed from news commentary about the 2026 rally and 52-week range, not exact OHLCV — see caveat above."
+  },
+  "financials_summary_last_4_periods": [
+    {"period": "Q3 FY2026 (ended 2026-06-27)", "revenue_usd": 109400000000, "net_income_usd": 29800000000, "eps": 2.02, "note": "EPS includes $0.11/share favorable tariff-refund impact; adjusted EPS ex-refund was ~$1.91."},
+    {"period": "Q2 FY2026 (ended 2026-03-28)", "revenue_usd": 111200000000, "net_income_usd": 29578000000, "eps": 2.01},
+    {"period": "Q1 FY2026 (ended 2025-12-27)", "revenue_usd": 143800000000, "net_income_usd": 42000000000, "eps": 2.84, "note": "net_income approximated from EPS x diluted shares, not a directly sourced figure."},
+    {"period": "Q4 FY2025 (ended 2025-09-27)", "revenue_usd": 102500000000, "net_income_usd": 27600000000, "eps": 1.85, "note": "EPS and net_income on an adjusted basis; net_income approximated from EPS x diluted shares."}
+  ],
+  "news_digest_last_6": [
+    {
+      "headline": "Apple earnings takeaways: Weak forecast, supply concerns overshadow sales beat in Cook's last report as CEO",
+      "source": "CNBC",
+      "published_at": "2026-07-30T20:00:00Z",
+      "sentiment": "negative",
+      "url": "https://www.cnbc.com/2026/07/30/apple-earnings-live-updates.html"
+    },
+    {
+      "headline": "Apple iPhone sales shine, but services segment and China revenue misses estimates",
+      "source": "Investing.com",
+      "published_at": "2026-07-30T21:00:00Z",
+      "sentiment": "negative",
+      "url": "https://www.investing.com/news/earnings/apple-beats-on-quarterly-profit-and-revenue-shares-slip-after-hours-4826162"
+    },
+    {
+      "headline": "Apple forecasts slower sales growth as chip supply crunch persists",
+      "source": "Business Standard",
+      "published_at": "2026-08-01T00:00:00Z",
+      "sentiment": "negative",
+      "url": "https://www.business-standard.com/world-news/apple-forecasts-slower-sales-growth-as-chip-supply-crunch-persists-126080100003_1.html"
+    },
+    {
+      "headline": "Apple Loses No. 1 Market Cap Over Memory Crunch, Eyes Chinese Chips",
+      "source": "Seoul Economic Daily",
+      "published_at": "2026-08-01T05:00:00Z",
+      "sentiment": "negative",
+      "url": "https://en.sedaily.com/international/2026/08/01/apple-loses-no-1-market-cap-over-memory-crunch-eyes-chinese"
+    },
+    {
+      "headline": "Apple Q3 FY26: Record Quarter, Weak Guidance, Siri Timing",
+      "source": "Digital Applied",
+      "published_at": "2026-07-31T10:00:00Z",
+      "sentiment": "neutral",
+      "url": "https://www.digitalapplied.com/blog/apple-q3-fy26-earnings-record-quarter-weak-guidance"
+    },
+    {
+      "headline": "Apple Enters The Ternus Era As Investors Weigh Its Next Innovation Cycle",
+      "source": "Forbes",
+      "published_at": "2026-04-21T09:00:00Z",
+      "sentiment": "neutral",
+      "url": "https://www.forbes.com/sites/petercohan/2026/04/21/apple-enters-the-ternus-era-as-investors-weigh-its-next-innovation-cycle/"
+    }
+  ],
+  "risks_notes_text": "Guidance deceleration: management guided September-quarter (Q4 FY26) revenue growth to just 9-11% YoY, down sharply from the 16% just reported, citing a 2.5pp FX headwind and increased supply constraints on iPhone/Mac/iPad. Margin pressure: gross margin guided down to 47-48% (from 48.65% TTM) due to sharply rising memory-chip costs, which Tim Cook himself called a 'hundred-year flood' — severe enough that Apple already raised Mac/iPad prices in June 2026. Double miss in two strategic growth vectors: Services revenue ($30.74B, +12.1% YoY) and Greater China revenue ($18.82B, +22.4% YoY) both grew but missed analyst estimates. Leadership transition risk: Tim Cook hands the CEO role to John Ternus on 2026-09-01 — Ternus's first quarter in charge will be the one guided down; analysts are described as taking a 'wait and see' stance on whether he can revive Apple's innovation cycle. Valuation: trailing P/E of ~40x is well above Apple's own historical norm (typically 25-30x) and prices in continued AI-driven monetization (revamped Siri built with Google/Alphabet, expanded Apple Intelligence unveiled at WWDC 2026) — a real earnings disappointment during the leadership handoff could compress this multiple materially. Notable tension in the data: several sell-side analysts (Wedbush, Bank of America, Evercore ISI) raised price targets into the $365-400 range around/after this report citing the AI roadmap, even as the stock itself fell ~7% and lost its #1 market-cap ranking — i.e., near-term price action and longer-term sell-side sentiment are currently pulling in opposite directions. Offsetting strength: balance sheet remains very strong ($146.5B cash/marketable securities vs. $84.3B debt), giving real cushion and buyback capacity through the transition."
+}

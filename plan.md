@@ -96,9 +96,16 @@ This guarantees the AI never reasons over data the user can't also see.
   `(company_id, section_key)` so each section is independently regenerable and timestamped.
   This is a derived cache computed from the raw tables above, and doubles as prompt input.
 - `ai_analyses` — one row per verdict ever generated (never overwritten): `verdict`
-  (buy/hold/sell), `confidence`, `reasoning_text`, `cited_sources` (JSONB), `context_snapshot`
-  (JSONB — the exact dict sent to Gemini, kept for reproducibility), `trigger`
+  (buy/hold/sell), `confidence`, `reasoning_text`, `price_targets` (JSONB —
+  `buy_at_or_below`/`sell_at_or_above`/`stop_loss`, nullable per field), `hold_period_days`
+  (JSONB — `min`/`max`/`note`, null when verdict is `sell`), `cited_sources` (JSONB),
+  `context_snapshot` (JSONB — the exact dict sent to Gemini, kept for reproducibility), `trigger`
   (`scheduled|on_demand|initial`), `generated_at`. Indexed `(company_id, generated_at DESC)`.
+- `ai_critiques` — one row per second-opinion critique ever generated (never overwritten):
+  `analysis_id` (FK → `ai_analyses`, the verdict being critiqued), `agrees_with_verdict_direction`
+  (bool), `biggest_weakness` (text), `revised_price_targets` (JSONB, nullable per field),
+  `revised_confidence` (nullable float), `rationale` (text), `generated_at`. Always on-demand,
+  never scheduled — see AI pipeline section.
 - `provider_call_log` — append-only ledger per external call (`provider`, `status`,
   `called_at`) backing the rate limiter and circuit breaker, and doubling as an audit trail.
 - `job_runs` — background job observability (`job_name`, `status`, `error_message`,
@@ -148,7 +155,8 @@ triggers are safe no-ops.
 1. `ai_service.build_prompt(ticker)` calls the shared `wiki_service.assemble(ticker)`.
 2. Renders a versioned prompt template requesting strict JSON:
    `{verdict, confidence, reasoning, cited_sources}` (use Gemini's JSON/schema mode if
-   available to avoid brittle text parsing).
+   available to avoid brittle text parsing). Template lives at `prompts/verdict_prompt_v1.md`,
+   derisked standalone in step 0 below before this service is built.
 3. Call wrapped in the same retry/backoff + rate-limit-bucket pattern as the data providers,
    budgeted below Gemini's free RPM/RPD limits with headroom.
 4. On quota exhaustion: scheduled analysis just skips the cycle (next day's run retries); an
@@ -158,6 +166,29 @@ triggers are safe no-ops.
 6. **Budget priority**: scheduled watchlist analyses (small, predictable) get priority over
    unbounded on-demand lookup analyses, which are rejected gracefully once the daily budget is
    spent.
+
+### Second opinion (adversarial critique pass)
+An explicit, **on-demand-only** `POST /companies/{ticker}/critique` action, never run as part of
+scheduled analysis — it's a second full Gemini call on top of the first, and running it
+automatically for every watchlist ticker would roughly double daily quota usage for no reason
+most of the time. Template lives at `prompts/verdict_critique_prompt_v1.md`, derisked
+standalone in step 0 alongside the main verdict prompt.
+1. Takes the same `wiki_service.assemble(ticker)` data plus the specific `ai_analyses` row being
+   critiqued (identified by `analysis_id`) as input.
+2. Framed adversarially — told explicitly to find the single weakest assumption/number in the
+   first-pass verdict rather than restate it — since a model self-critiquing within one
+   generation tends to rubber-stamp far more than a genuinely separate pass does.
+3. Returns `{agrees_with_verdict_direction, biggest_weakness, revised_price_targets,
+   revised_confidence, rationale}`. Stored as an `ai_critiques` row: `analysis_id` (FK →
+   `ai_analyses`), plus the same fields, `generated_at`. One-to-many (an analysis can be
+   critiqued more than once on request) — never overwritten, same append-only philosophy as
+   `ai_analyses`.
+4. Subject to the same budget/rate-limit/quota-exhaustion handling as on-demand lookup analyses
+   (clear "quota reached" message, never a silent failure) — and explicitly the lowest priority
+   in the budget order below scheduled analyses and on-demand first-pass verdicts, since it's a
+   nice-to-have refinement, not the primary analysis.
+5. Surfaced in the UI as a "Get Second Opinion" button on the AI verdict banner (see wiki page
+   layout below) — the user opts in per-ticker rather than it happening automatically.
 
 ### Two-tier coverage (watchlist vs. any-company lookup)
 - `lookup_service.get_or_fetch(ticker)`: if `companies` has a fresh-enough row, serve straight
@@ -207,9 +238,14 @@ route-driven) · `/compare` (2–5 tickers, normalized overlay + peer fundamenta
 1. Infobox header (name/ticker/logo/price/sector tags + freshness indicator + action bar:
    Analyze with AI / Add-Remove Watchlist / Compare).
 2. **AI verdict banner** directly below — large buy/hold/sell badge, one-paragraph rationale,
-   confidence, cited source chips. For never-analyzed lookup tickers this becomes an "Analyze
-   with AI" call-to-action instead of a badge. Deliberately the *second* thing on the page, not
-   buried.
+   confidence, a compact buy/sell/stop-loss price-target strip with the suggested hold period
+   (rendered as null/dashes rather than hidden when the model didn't set them), cited source
+   chips, and a "Get Second Opinion" button that triggers the adversarial critique pass and
+   renders its result (agreement/disagreement, the named weakness, any revised numbers) inline
+   below the original verdict rather than replacing it — the point is to show both takes, not
+   silently overwrite one with the other. For never-analyzed lookup tickers this becomes an
+   "Analyze with AI" call-to-action instead of a badge. Deliberately the *second* thing on the
+   page, not buried.
 3. Price chart panel (timeframe selector, candlesticks + volume, overlay toggles, RSI/MACD
    sub-panes collapsible on mobile, benchmark-compare toggle, verdict markers).
 4. Overview (encyclopedia-style description) → Key Metrics (stat tiles) → Financials (bar
@@ -241,6 +277,18 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
 
 ## Suggested Build Order
 
+0. **Derisk the Gemini verdict prompt, before anything else is built.** Whether Gemini's free
+   tier will actually return a real buy/hold/sell verdict (vs. refusing or hedging like a
+   consumer chatbot) is an assumption the entire AI pipeline depends on — cheaper to falsify now
+   than after the DB schema and `ai_service` are built around it. `prompts/verdict_prompt_v1.md`
+   is the versioned template (framed as a private single-user tool, schema-forced JSON output via
+   Gemini's `response_schema`); `scripts/test_gemini_prompt.py` runs it standalone against two
+   fixtures (`scripts/fixtures/sample_wiki_data.json` — normal case, `sample_wiki_thin.json` —
+   thin/contradictory data) with zero dependency on Postgres/FastAPI. Get a Gemini API key, run
+   the script a handful of times per fixture, and confirm: verdicts actually vary (not always
+   "hold"), confidence tracks data quality, and the thin-data case produces an honest
+   low-confidence "hold" rather than a refusal or false confidence. If this fails, it's cheaper to
+   adjust the prompt framing or reconsider Gemini's suitability now than after step 4.
 1. **Backend skeleton**: DB models + Alembic migrations, FastAPI app boot, Finnhub client
    only (no fallback yet), basic `/companies/{ticker}/wiki` returning real price/profile data
    for one hardcoded ticker. Verify against a local Postgres via Docker.
@@ -280,6 +328,10 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
   internet-accessible and installable.
 
 ## Key risks/tradeoffs (flagged, not blockers)
+- Gemini may refuse or hedge on a direct verdict rather than returning buy/hold/sell, similar to
+  consumer-chatbot safety behavior — mitigated by prompt framing (private single-user tool,
+  schema-forced JSON) and derisked explicitly in build-order step 0 before the rest of the AI
+  pipeline is built around the assumption that it works.
 - Render free-tier cold start: 10–30s on the first request after a long idle period.
 - Alpha Vantage's free daily cap is small — fallback-only, never a routine parallel source.
 - Gemini free-tier limits mean heavy on-demand usage in a single day could hit "try again
