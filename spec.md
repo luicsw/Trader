@@ -1,6 +1,6 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
-**Status:** Phase 0 complete, Phase 1 not started · **Last updated:** 2026-08-02
+**Status:** Phase 0 and Phase 1 complete, Phase 2 not started · **Last updated:** 2026-08-03
 
 **Relationship to `plan.md`:** `plan.md` is the narrative design doc — architecture rationale,
 rejected alternatives, tradeoffs. This file is the structured, testable specification and task
@@ -227,14 +227,28 @@ don't start the next phase until it passes.
 - [x] T0.7 Secure API key handling: `.env` + `.gitignore` + `.env.example`, no secrets in git history
 - **Verified:** consistent buy/hold/sell verdicts (not always "hold"), internally-consistent price targets anchored to real swing levels, honest nulls on thin data, adversarial critique produces genuine (not rubber-stamped) pushback.
 
-### Phase 1 — Backend skeleton
-- [ ] T1.1 Initialize Python project structure per `plan.md` → "Backend (FastAPI) Structure" (`app/`, `tests/`)
-- [ ] T1.2 `docker-compose.yml` for local Postgres
-- [ ] T1.3 SQLAlchemy models + first Alembic migration: `companies`, `price_bars` (minimal columns to start)
-- [ ] T1.4 FastAPI app boot + `api/routers/health.py` (`GET /health`)
-- [ ] T1.5 `providers/finnhub_client.py` implementing `providers/base.py` interface (no fallback yet)
-- [ ] T1.6 `GET /companies/{ticker}/wiki` returning real price/profile data for one hardcoded ticker
-- **Verify:** query the endpoint against local Postgres via Docker and get real data back for one ticker.
+### Phase 1 — Backend skeleton ✅ DONE
+- [x] T1.1 Initialize Python project structure per `plan.md` → "Backend (FastAPI) Structure" (`app/`, `tests/`)
+- [x] T1.2 `docker-compose.yml` for local Postgres
+- [x] T1.3 SQLAlchemy models + first Alembic migration: `companies`, `price_bars` (minimal columns to start)
+- [x] T1.4 FastAPI app boot + `api/routers/health.py` (`GET /health`)
+- [x] T1.5 `providers/finnhub_client.py` implementing `providers/base.py` interface (no fallback yet), unit-tested against recorded fixtures with `respx` (no live network)
+- [x] T1.6 `GET /companies/{ticker}/wiki` returning real price/profile data for a real ticker (AAPL), upserted via `ON CONFLICT DO UPDATE` (FR-4)
+- **Verified:** `/health` → 200; `alembic upgrade head` creates `companies`/`price_bars` cleanly; `/companies/AAPL/wiki` → 200 with real Finnhub data, correctly persisted (confirmed via direct query).
+
+**Local dev environment note:** on this machine, Docker Desktop's host↔container port-forwarding
+proxy (and, separately, Podman's) both failed to deliver TCP traffic correctly from Windows host
+to a containerized Postgres — proven to be host-level interference (likely the corporate-managed
+endpoint security agent — Windows Defender NIS was active), not a bug in either container
+runtime, since Postgres itself and its password auth worked flawlessly from *inside* both
+Docker's and Podman's containers, and identically failed from the host with both backends.
+Workaround: PostgreSQL installed natively inside the `Ubuntu` WSL distro (`apt install
+postgresql`), with a matching `.venv-wsl` Python virtualenv also inside WSL — both the app and the
+database now run in the same Linux VM, so nothing crosses the Windows host boundary where the
+interference occurs. `docker-compose.yml` is kept as-is for anyone (or any future machine) where
+Docker's port-forwarding works normally; this is a per-machine workaround, not a project-wide
+architecture change. Flagged as a question for IT if Docker Desktop itself needs to work on this
+machine specifically.
 
 ### Phase 2 — Wiki assembly + lookup tier
 - [ ] T2.1 `services/wiki_service.py::assemble(ticker)` (FR-10)
