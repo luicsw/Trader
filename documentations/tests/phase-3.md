@@ -2,6 +2,7 @@
 
 **Phase:** 3 — Watchlist + scheduler + reliability
 **Result at phase close:** **54 / 54 passed, 0 failed** (up from 16 at the end of Phase 2).
+**Result after post-phase hardening (see bottom of this doc):** **63 / 63 passed, 0 failed.**
 **Also produced:** a live reliability drill against the real app, and one real test-isolation
 bug found and fixed mid-phase.
 
@@ -129,5 +130,39 @@ pie showData
 
 Re-ran the full suite twice consecutively after the fix to confirm the flakiness was actually
 gone, not just coincidentally green once: both runs came back 54/54.
+
+## Post-phase hardening (requested before starting Phase 4)
+
+Before moving to Phase 4, a coverage audit turned up gaps specific to Phase 3's own
+deliverables: every router/service had been tested, but three things had **zero** coverage —
+the HTTP layer of `watchlist.py`/`wiki.py` (only tested at the service layer directly), the
+APScheduler wiring in `jobs/scheduler.py`, and whether the `downgrade()` side of any migration
+actually runs without error (written but never executed).
+
+| Addition | Tests | What it closed |
+|---|---|---|
+| `tests/integration/test_wiki_router.py` | 3 | `GET /companies/{ticker}/wiki` at the HTTP layer: happy path, case-insensitivity, 502 on provider failure |
+| `tests/integration/test_watchlist_router.py` | 4 | `POST /watchlist/{ticker}/promote` + `DELETE /watchlist/{ticker}` at the HTTP layer: happy path, tier revert, 502 on unfetchable ticker, idempotent no-op remove |
+| `tests/integration/test_refresh_router.py` (fixed) | 2 (was 1) | Was silently relying on the shared dev DB's watchlist happening to be empty — now isolated via dependency override, and a second test actually exercises a due ticker instead of only the empty no-op case |
+| `tests/integration/test_scheduler.py` | 1 | First-ever coverage of `app/jobs/scheduler.py`: `start()` genuinely invokes `refresh_watchlist` on an interval, `shutdown()` genuinely stops it |
+| Migration round-trip (manual, not pytest) | — | `alembic upgrade head` → `downgrade base` → `upgrade head` against a disposable throwaway database — all three migrations' `downgrade()` functions run cleanly (correct enum/table drop order), never previously executed |
+
+A new `client` fixture (`tests/integration/conftest.py`) makes this possible cleanly: it
+overrides FastAPI's `get_db` dependency with the same rolled-back-transaction `db_session` used
+everywhere else, so HTTP-level tests get the identical isolation guarantee as service-level
+tests instead of writing real rows to the shared dev database.
+
+```mermaid
+xychart-beta
+    title "Phase 3 final count, before vs after hardening"
+    x-axis ["Before hardening", "After hardening"]
+    y-axis "Passing tests" 0 --> 70
+    bar [54, 63]
+```
+
+**54 → 63 tests, all passing.** No product bugs were found this round — the migration
+round-trip and scheduler wiring both worked correctly on the first try — but the `test_refresh_router.py`
+fragility (silently depending on shared-DB state) was a real latent risk worth eliminating
+before it caused a confusing failure down the line.
 
 **Previous:** [phase-2.md](phase-2.md) · **Back to index:** [README.md](README.md)

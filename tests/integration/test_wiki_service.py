@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from app.db.models import Company, CoverageTier, PriceBar, WikiSection, WikiSectionKey
+from app.db.models import Company, CoverageTier, NewsArticle, PriceBar, Sentiment, WikiSection, WikiSectionKey
 from app.services import wiki_service
 
 
@@ -28,6 +28,15 @@ def test_assemble_reads_company_bar_and_sections(db_session):
     db_session.add(
         WikiSection(company_id=company.id, section_key=WikiSectionKey.overview, body="Zzz Corp overview.")
     )
+    db_session.add(
+        NewsArticle(
+            company_id=company.id,
+            headline="Zzz Corp news",
+            url="https://example.com/zzz",
+            published_at=now,
+            sentiment=Sentiment.neutral,
+        )
+    )
     db_session.commit()
 
     wiki = wiki_service.assemble(db_session, "zzzz")
@@ -38,3 +47,8 @@ def test_assemble_reads_company_bar_and_sections(db_session):
     assert wiki["latest_price"]["close"] == 1.5
     assert wiki["sections"]["overview"]["body"] == "Zzz Corp overview."
     assert "financials_summary" not in wiki["sections"]
+    assert wiki["price_summary"]["last_close"] == 1.5
+    assert wiki["recent_swing_levels"]["high_20d"] == 2.0
+    assert len(wiki["recent_news"]) == 1
+    assert wiki["recent_news"][0]["headline"] == "Zzz Corp news"
+    assert wiki["recent_news"][0]["sentiment"] == "neutral"

@@ -29,6 +29,9 @@ def get_or_fetch(db: Session, ticker: str) -> dict:
             db.commit()
             raise
 
+        articles = provider_orchestrator.fetch_news_best_effort(db, ticker)
+        ingest_service.upsert_news(db, company.id, articles)
+
         bar = ingest_service.latest_bar(db, company.id)
         wiki_sections_service.generate_sections(db, company, bar)
         db.add(JobRun(job_name=f"lookup:{ticker}", status=JobStatus.success))

@@ -1,11 +1,12 @@
 """wiki_service.assemble(ticker) -- the single read path for a company's wiki page
-(spec.md FR-10). Reads only from Postgres; used by both the wiki API route and, later,
-the AI prompt builder, so the AI can never see data the user can't also see.
+(spec.md FR-10). Reads only from Postgres; used by both the wiki API route and the AI prompt
+builder (ai_service.build_prompt), so the AI can never see data the user can't also see.
 """
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, PriceBar, WikiSection
+from app.db.models import Company, WikiSection
+from app.services import ingest_service, technicals_service
 
 
 def assemble(db: Session, ticker: str) -> dict | None:
@@ -14,12 +15,9 @@ def assemble(db: Session, ticker: str) -> dict | None:
     if company is None:
         return None
 
-    latest_bar = db.scalar(
-        select(PriceBar)
-        .where(PriceBar.company_id == company.id)
-        .order_by(PriceBar.ts.desc())
-        .limit(1)
-    )
+    latest_bar = ingest_service.latest_bar(db, company.id)
+    bars_desc = ingest_service.recent_bars(db, company.id)
+    articles = ingest_service.recent_news(db, company.id, limit=6)
     sections = db.scalars(
         select(WikiSection).where(WikiSection.company_id == company.id)
     ).all()
@@ -45,6 +43,19 @@ def assemble(db: Session, ticker: str) -> dict | None:
         }
         if latest_bar
         else None,
+        "price_summary": technicals_service.compute_price_summary(bars_desc),
+        "recent_swing_levels": technicals_service.compute_swing_levels(bars_desc),
+        "recent_news": [
+            {
+                "headline": article.headline,
+                "summary": article.summary,
+                "source": article.source,
+                "published_at": article.published_at.isoformat() if article.published_at else None,
+                "sentiment": article.sentiment.value if article.sentiment else None,
+                "url": article.url,
+            }
+            for article in articles
+        ],
         "sections": {
             section.section_key.value: {
                 "body": section.body,

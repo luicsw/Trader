@@ -22,5 +22,17 @@ class Settings(BaseSettings):
     watchlist_default_refresh_interval_minutes: int = 20
     scheduler_interval_seconds: int = 300
 
+    # AI pipeline (Phase 4). gemini-flash-latest is a moving alias (spec.md open decision #2)
+    # -- kept as a config knob rather than hardcoded so it can be pinned to an explicit
+    # version later without a code change, and the exact model used per call is stamped into
+    # ai_analyses.context_snapshot for reproducibility (NFR-5).
+    gemini_model: str = "gemini-flash-latest"
+    gemini_rate_limit_per_window: int = 100
+    gemini_rate_limit_window_seconds: int = 86400
+    # Budget priority (FR-17, FR-20): on-demand and critique get throttled before the full
+    # daily budget is exhausted, reserving headroom for higher-priority callers.
+    gemini_on_demand_budget_fraction: float = 0.7
+    gemini_critique_budget_fraction: float = 0.4
+
 
 settings = Settings()

@@ -5,16 +5,19 @@ import pytest
 import respx
 
 from app.config import settings
-from app.db.models import Company, CoverageTier, JobRun, JobStatus, Watchlist
+from app.db.models import Company, CoverageTier, JobRun, JobStatus, NewsArticle, Watchlist
 from app.services import refresh_service
 
 
-def _mock_finnhub_success(name="Refreshed Co"):
+def _mock_finnhub_success(name="Refreshed Co", news=None):
     respx.get("https://finnhub.io/api/v1/stock/profile2").mock(
         return_value=httpx.Response(200, json={"name": name, "exchange": "NASDAQ"})
     )
     respx.get("https://finnhub.io/api/v1/quote").mock(
         return_value=httpx.Response(200, json={"c": 42, "o": 40, "h": 43, "l": 39, "pc": 41})
+    )
+    respx.get("https://finnhub.io/api/v1/company-news").mock(
+        return_value=httpx.Response(200, json=news or [])
     )
 
 
@@ -104,3 +107,18 @@ def test_provider_failure_is_recorded_and_does_not_crash_the_cycle(db_session):
     job = db_session.query(JobRun).filter_by(job_name="scheduled_refresh:EEE").one()
     assert job.status == JobStatus.failure
     assert job.error_message
+
+
+@respx.mock
+def test_refresh_persists_news_articles(db_session):
+    _make_watchlisted_company(db_session, "FFF", last_scheduled_refresh_at=None)
+    _mock_finnhub_success(
+        news=[{"headline": "FFF wins new contract", "url": "https://example.com/fff-news", "datetime": 1735689600}]
+    )
+
+    refresh_service.refresh_watchlist(db_session)
+
+    company = db_session.query(Company).filter_by(ticker="FFF").one()
+    articles = db_session.query(NewsArticle).filter_by(company_id=company.id).all()
+    assert len(articles) == 1
+    assert articles[0].headline == "FFF wins new contract"

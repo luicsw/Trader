@@ -1,6 +1,6 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
-**Status:** Phase 0 through Phase 3 complete, Phase 4 not started · **Last updated:** 2026-08-03
+**Status:** Phase 0 through Phase 4 complete, Phase 5 not started · **Last updated:** 2026-08-03
 
 **Relationship to `plan.md`:** `plan.md` is the narrative design doc — architecture rationale,
 rejected alternatives, tradeoffs. This file is the structured, testable specification and task
@@ -288,6 +288,13 @@ machine specifically.
   54 unit+integration tests pass (up from 20 at the end of Phase 2), including new coverage
   for `finnhub_client`/`alpha_vantage_client` normalization, `rate_limiter`, `circuit_breaker`,
   `provider_orchestrator`, `refresh_service`, and `watchlist_service`.
+- **Post-phase hardening (before starting Phase 4):** a coverage audit found the `watchlist`/
+  `wiki` routers had HTTP-layer tests missing (only tested at the service layer), the
+  APScheduler wiring in `jobs/scheduler.py` had zero coverage, and no migration's `downgrade()`
+  had ever actually been executed. Closed all three: 9 new tests (54 → 63 passing) plus a live
+  `alembic upgrade head` → `downgrade base` → `upgrade head` round-trip against a disposable
+  throwaway database (all three migrations' downgrades run cleanly). Full detail in
+  [`tests/phase-3.md`](tests/phase-3.md#post-phase-hardening-requested-before-starting-phase-4).
 - **Design decisions beyond the literal task list:**
   - `providers/*` clients now return a **normalized** shape (`name/exchange/sector/logo_url/
     market_cap`, `open/high/low/close/previous_close`) instead of provider-specific keys, so
@@ -323,14 +330,52 @@ machine specifically.
     rows inside the test's (rolled-back) transaction before yielding, so manual live testing
     against this same dev DB can never poison the suite again.
 
-### Phase 4 — AI pipeline (verdict + second opinion)
-- [ ] T4.1 `providers/gemini_client.py` wrapping `google-genai` with retry/backoff + rate-limit bucket
-- [ ] T4.2 `services/ai_service.py::build_prompt(ticker)` rendering `verdict_prompt_v1.md` against `wiki_service.assemble()` (FR-14)
-- [ ] T4.3 `ai_analyses` table + write path + budget/priority logic (FR-15, FR-16, FR-17)
-- [ ] T4.4 `api/routers/analysis.py`: `POST /companies/{ticker}/analyze`, `POST /internal/analyze-scheduled`
-- [ ] T4.5 `ai_critiques` table + `build_critique_prompt()` + `POST /companies/{ticker}/critique` (FR-18, FR-19, FR-20)
+### Phase 4 — AI pipeline (verdict + second opinion) ✅ DONE
+- [x] T4.1 `providers/gemini_client.py` wrapping `google-genai` with retry/backoff + rate-limit bucket
+- [x] T4.2 `services/ai_service.py::build_prompt(ticker)` rendering `verdict_prompt_v1.md` against `wiki_service.assemble()` (FR-14)
+- [x] T4.3 `ai_analyses` table + write path + budget/priority logic (FR-15, FR-16, FR-17)
+- [x] T4.4 `api/routers/analysis.py`: `POST /companies/{ticker}/analyze`, `POST /internal/analyze-scheduled`
+- [x] T4.5 `ai_critiques` table + `build_critique_prompt()` + `POST /companies/{ticker}/critique` (FR-18, FR-19, FR-20)
 - **Verify:** trigger on-demand analysis on a few tickers, confirm `context_snapshot` matches the wiki page shown; trigger critique on one of them and confirm it lands below scheduled/on-demand analyses in budget priority under simulated quota pressure.
-- **Open decision before starting (see §11):** should `/critique` be available for lookup-tier tickers too, or watchlist-only?
+- **Verified:** live, real Gemini calls (not mocked) against NVDA — `POST /companies/NVDA/analyze`
+  returned an honest low-confidence `hold` (0.25) with null price targets and reasoning explicitly
+  citing the missing financials/news, exactly matching Phase 0's validated thin-data behavior.
+  `context_snapshot` in the DB confirmed to match the wiki page's `last_close` exactly. Critique
+  on that same analysis came back genuinely adversarial (agreed with the `hold` direction but
+  flagged the missing stop-loss as the weakest point, proposing one anchored to the real 20-day
+  low) — not a rubber-stamp. Watchlist-only restriction confirmed live (AAPL, lookup-tier →
+  `400`). Budget-priority ordering (scheduled > on-demand > critique) verified via mocked
+  integration tests simulating quota pressure, not live (didn't want to actually burn real daily
+  quota to prove it) — see `tests/phase-4.md`.
+- **Open decision resolved:** `/critique` restricted to **watchlist tickers only** (extra quota
+  protection beyond budget-priority ordering, since critique is a nice-to-have refinement) —
+  user decision, made before this phase started.
+- **Scope decision beyond the literal task list:** the verdict prompt (Phase 0) was validated
+  against rich fixtures (real fundamentals, news, computed technicals) that the pipeline didn't
+  actually collect through Phase 3 (no `fundamentals`/`news_articles` tables existed). Closed
+  the gap for news and technicals, not fundamentals: added `news_articles` (real Finnhub/Alpha
+  Vantage news, best-effort, never blocks the primary refresh) and `services/technicals_service.py`
+  (swing levels + price-change %, computed from `price_bars` history already being collected --
+  no new provider calls needed). Fundamentals (P/E, revenue growth, margins) are still not
+  ingested -- Gemini handles the resulting empty `financials_summary_last_4_periods` array
+  honestly (already proven by Phase 0's own thin fixture, and reconfirmed by the live NVDA
+  verification above). User decision, made before this phase started.
+- **Bugs found and fixed while building this phase:**
+  - `ingest_service.upsert_profile_and_quote` truncated `price_bars.ts` to the **hour**, not
+    the day, so a `"1d"`-interval bar fragmented into one row per hour instead of one per
+    trading day -- would have silently broken every swing-level/price-history computation this
+    phase needed. Fixed to truncate to midnight UTC before writing any Phase 4 code.
+  - Added `ProviderName.gemini` to the Python enum but forgot the matching Postgres migration
+    -- `ALTER TYPE providername ADD VALUE 'gemini'` was missing, so the very first rate-limiter
+    check against Gemini failed with `invalid input value for enum providername`. Caught
+    immediately by the test suite; fixed with migration `0006`.
+  - Same test-isolation class of bug as Phase 3's `provider_call_log` incident, this time on
+    `ai_analyses`: the live NVDA verification (above) committed real rows to the shared dev DB,
+    which then broke two tests asserting a *global* `AiAnalysis` table count. Unlike Phase 3's
+    fix (clearing `provider_call_log` in the test fixture, since rate limiting is inherently
+    provider-wide), this was a bug in the tests themselves -- they should have scoped the count
+    to the company they seeded from the start. Fixed by scoping both assertions to their own
+    `company_id`(s) rather than broadening the fixture to blindly clear a business-data table.
 
 ### Phase 5 — Frontend core
 - [ ] T5.1 Vite + React + TypeScript scaffold, Tailwind, React Router, React Query provider
@@ -385,8 +430,8 @@ machine specifically.
 
 | # | Question | Status |
 |---|---|---|
-| 1 | Should `POST /companies/{ticker}/critique` be available for lookup-tier (non-watchlisted) tickers, or restricted to watchlist tickers only, as an extra layer of quota protection beyond the existing budget-priority ordering? | **Unresolved** — decide before Phase 4 |
-| 2 | Gemini model id drifts as Google deprecates versions (`gemini-2.0-flash` and `gemini-2.5-flash` both already dead ends as of 2026-08-02). Current default is the `gemini-flash-latest` alias. | Monitor — re-check alias behavior when Phase 4 backend code is written, since backend retry/budget logic may want an explicit pinned version instead of a moving alias for reproducibility (tension with NFR-5). |
+| 1 | Should `POST /companies/{ticker}/critique` be available for lookup-tier (non-watchlisted) tickers, or restricted to watchlist tickers only, as an extra layer of quota protection beyond the existing budget-priority ordering? | **Resolved** — watchlist-only, enforced in `api/routers/analysis.py::critique()` and verified both by mocked tests and live against a real lookup-tier ticker (AAPL → 400). |
+| 2 | Gemini model id drifts as Google deprecates versions (`gemini-2.0-flash` and `gemini-2.5-flash` both already dead ends as of 2026-08-02). Current default is the `gemini-flash-latest` alias. | **Addressed, not fully closed** — `settings.gemini_model` is now a config knob (default still the `gemini-flash-latest` alias) rather than hardcoded, and the exact model used per call is stamped into `ai_analyses.context_snapshot` for reproducibility (NFR-5). Still worth pinning to an explicit version before Phase 8 deploy if alias drift becomes a real problem. |
 
 ## 12. Key Risks (carried from `plan.md`, condensed)
 
@@ -420,39 +465,68 @@ app/
   main.py, config.py                 — FastAPI app (lifespan starts/stops the scheduler), settings
   db/
     session.py, models.py            — Company, PriceBar, WikiSection (Phase 1-2); Watchlist,
-                                        ProviderCallLog, JobRun (Phase 3)
+                                        ProviderCallLog, JobRun (Phase 3); NewsArticle, AiAnalysis,
+                                        AiCritique (Phase 4)
     migrations/versions/
       0001_initial.py                — companies, price_bars (Phase 1)
       0002_wiki_sections.py          — wiki_sections (Phase 2)
       0003_watchlist_reliability.py  — watchlist, provider_call_log, job_runs (Phase 3)
+      0004_news_articles.py          — news_articles (Phase 4)
+      0005_ai_analyses_and_critiques.py — ai_analyses, ai_critiques (Phase 4)
+      0006_add_gemini_provider.py    — adds 'gemini' to the providername enum (Phase 4)
   api/routers/
     health.py                        — GET /health (Phase 1)
     wiki.py                          — GET /companies/{ticker}/wiki, delegates to lookup_service (Phase 2)
     watchlist.py                     — POST /watchlist/{ticker}/promote, DELETE /watchlist/{ticker} (Phase 3)
     refresh.py                       — POST /internal/refresh (Phase 3)
+    analysis.py                      — POST /companies/{ticker}/analyze, /internal/analyze-scheduled,
+                                        /companies/{ticker}/critique (watchlist-only) (Phase 4)
   jobs/
     scheduler.py                     — APScheduler wiring; calls the same refresh_service
                                         function as the refresh router (NFR-1) (Phase 3)
   services/
-    wiki_service.py                  — assemble(ticker) (Phase 2, T2.1)
+    wiki_service.py                  — assemble(ticker), now also surfaces recent_news/
+                                        price_summary/recent_swing_levels (Phase 2, extended Phase 4)
     lookup_service.py                — get_or_fetch(ticker) (Phase 2, T2.2)
-    wiki_sections_service.py         — template-based section generation (Phase 2, T2.3)
-    ingest_service.py                — shared profile+quote upsert logic (Phase 3)
-    provider_orchestrator.py         — fetch_with_fallback() (Phase 3, T3.3)
-    rate_limiter.py                 — per-provider sliding window over provider_call_log (Phase 3, T3.4)
+    wiki_sections_service.py         — template-based section generation, real news_digest +
+                                        technicals in key_metrics (Phase 2, extended Phase 4)
+    ingest_service.py                — shared profile+quote+news upsert logic, recent_bars()/
+                                        recent_news() readers (Phase 3, extended Phase 4)
+    provider_orchestrator.py         — fetch_with_fallback(), fetch_news_best_effort() (Phase 3, T3.3;
+                                        news added Phase 4)
+    rate_limiter.py                 — per-provider sliding window over provider_call_log, with a
+                                        budget_fraction param for priority tiers (Phase 3, T3.4;
+                                        extended Phase 4 for Gemini budget priority)
     circuit_breaker.py               — per-provider circuit state over provider_call_log (Phase 3, T3.5)
     refresh_service.py               — refresh_watchlist()/refresh_entry() (Phase 3, T3.2)
     watchlist_service.py             — promote()/remove() (Phase 3, T3.1)
+    technicals_service.py            — compute_swing_levels()/compute_price_summary() from
+                                        price_bars history, no new provider calls (Phase 4)
+    ai_service.py                    — build_prompt()/build_critique_prompt(), generate_verdict(),
+                                        analyze_scheduled(), generate_critique(), QuotaExhaustedError
+                                        (Phase 4, T4.2-T4.5)
   providers/
-    base.py                          — DataProvider interface, Transient/PermanentProviderError
-    finnhub_client.py                — primary provider, normalized output (Phase 1, updated Phase 3)
-    alpha_vantage_client.py          — fallback provider, normalized output (Phase 3, T3.3)
+    base.py                          — DataProvider interface (get_profile/get_quote/get_news),
+                                        Transient/PermanentProviderError
+    finnhub_client.py                — primary provider, normalized output, get_news() via
+                                        /company-news (Phase 1, updated Phase 3 and Phase 4)
+    alpha_vantage_client.py          — fallback provider, normalized output, get_news() via
+                                        NEWS_SENTIMENT with real sentiment labels (Phase 3, T3.3;
+                                        news added Phase 4)
+    gemini_client.py                 — wraps google-genai, schema-forced JSON, Transient/
+                                        PermanentProviderError mapping (Phase 4, T4.1)
 tests/
-  unit/                              — provider parsers, section-template rendering (respx, no network)
-  integration/                       — real Postgres, conftest.py rolls back per test and clears
-                                        provider_call_log so manual live testing can't poison
-                                        rate_limiter/circuit_breaker assertions
+  unit/                              — provider parsers, section-template rendering, technicals
+                                        computation, prompt-mapping, Gemini client (respx/mocks,
+                                        no live network)
+  integration/                       — real Postgres, conftest.py rolls back per test, clears
+                                        provider_call_log (protects rate_limiter/circuit_breaker
+                                        assertions from manual live testing), and provides a
+                                        `client` fixture (TestClient wired to the same rolled-back
+                                        session) for HTTP-level router tests
 ```
 
-The frontend does not exist yet — Phase 5 creates it. `fundamentals`, `news_articles`,
-`ai_analyses`, and `ai_critiques` tables don't exist yet either — Phase 4 adds them.
+The frontend does not exist yet — Phase 5 creates it. A `fundamentals` table still does not
+exist — Phase 4 deliberately did not add one (see this phase's scope-decision note above); the
+prompt's `financials_summary_last_4_periods` stays an honest empty array until a future phase
+adds real fundamentals ingestion.

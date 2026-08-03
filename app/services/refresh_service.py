@@ -64,6 +64,9 @@ def _refresh_one(db: Session, entry: Watchlist) -> None:
     result = provider_orchestrator.fetch_with_fallback(db, ticker)
     company = ingest_service.upsert_profile_and_quote(db, ticker, result["profile"], result["quote"])
 
+    articles = provider_orchestrator.fetch_news_best_effort(db, ticker)
+    ingest_service.upsert_news(db, company.id, articles)
+
     bar = ingest_service.latest_bar(db, company.id)
     wiki_sections_service.generate_sections(db, company, bar)
 

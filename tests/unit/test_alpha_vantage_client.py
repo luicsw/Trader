@@ -118,3 +118,52 @@ def test_get_quote_server_error_raises_transient_error():
 def test_missing_api_key_raises_permanent_error_immediately():
     with pytest.raises(PermanentProviderError):
         AlphaVantageClient(api_key="")
+
+
+@respx.mock
+def test_get_news_returns_normalized_articles_with_real_sentiment():
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "feed": [
+                    {
+                        "title": "IBM beats earnings estimates",
+                        "summary": "Strong quarter",
+                        "source": "Bloomberg",
+                        "time_published": "20250101T093000",
+                        "overall_sentiment_label": "Somewhat-Bullish",
+                        "url": "https://example.com/ibm-earnings",
+                    },
+                    {"title": "", "url": "https://example.com/missing-title"},
+                ]
+            },
+        )
+    )
+    client = AlphaVantageClient(api_key="test-key")
+
+    articles = client.get_news("IBM")
+
+    assert len(articles) == 1
+    assert articles[0]["headline"] == "IBM beats earnings estimates"
+    assert articles[0]["sentiment"] == "positive"
+    assert articles[0]["published_at"].year == 2025
+
+
+@respx.mock
+def test_get_news_empty_feed_is_not_an_error():
+    respx.get("https://www.alphavantage.co/query").mock(return_value=httpx.Response(200, json={}))
+    client = AlphaVantageClient(api_key="test-key")
+
+    assert client.get_news("IBM") == []
+
+
+@respx.mock
+def test_get_news_rate_limit_note_raises_transient_error():
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(200, json={"Note": "rate limited"})
+    )
+    client = AlphaVantageClient(api_key="test-key")
+
+    with pytest.raises(TransientProviderError):
+        client.get_news("IBM")

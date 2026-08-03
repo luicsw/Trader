@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, CoverageTier, PriceBar
+from app.db.models import Company, CoverageTier, NewsArticle, PriceBar, Sentiment
 
 
 def latest_bar(db: Session, company_id: int) -> PriceBar | None:
@@ -16,6 +16,20 @@ def latest_bar(db: Session, company_id: int) -> PriceBar | None:
         .where(PriceBar.company_id == company_id)
         .order_by(PriceBar.ts.desc())
         .limit(1)
+    )
+
+
+def recent_bars(db: Session, company_id: int, limit: int = 260) -> list[PriceBar]:
+    """Most-recent-first, up to `limit` bars -- 260 covers roughly a year of trading days,
+    which is what technicals_service's 1y-lookback/200d-moving-average needs at most.
+    """
+    return list(
+        db.scalars(
+            select(PriceBar)
+            .where(PriceBar.company_id == company_id)
+            .order_by(PriceBar.ts.desc())
+            .limit(limit)
+        ).all()
     )
 
 
@@ -42,7 +56,12 @@ def upsert_profile_and_quote(db: Session, ticker: str, profile: dict, quote: dic
     )
     company_id = db.execute(company_stmt).scalar_one()
 
-    bar_ts = now.replace(minute=0, second=0, microsecond=0)
+    # Truncated to the day, not the hour: a "1d" bar is one row per trading day, so repeated
+    # intraday refreshes upsert the SAME row (converging toward the day's true high/low as
+    # Finnhub's intraday-running h/l fields update) instead of fragmenting into one row per
+    # hour, which would silently break any lookback over "the last N days" (Phase 4 needs
+    # real day-level history for swing-level/price-change computations).
+    bar_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
     bar_fields = {
         "open": quote.get("open"),
         "high": quote.get("high"),
@@ -60,3 +79,39 @@ def upsert_profile_and_quote(db: Session, ticker: str, profile: dict, quote: dic
     db.execute(bar_stmt)
 
     return db.get(Company, company_id)
+
+
+def upsert_news(db: Session, company_id: int, articles: list[dict]) -> None:
+    """Upsert normalized article dicts (see providers/base.py DataProvider.get_news) via
+    ON CONFLICT on (company_id, url) -- re-fetching the same article (e.g. it's still within
+    the lookback window on the next refresh) updates in place rather than duplicating.
+    """
+    for article in articles:
+        sentiment = Sentiment(article["sentiment"]) if article.get("sentiment") else None
+        fields = {
+            "headline": article["headline"],
+            "summary": article.get("summary"),
+            "source": article.get("source"),
+            "published_at": article.get("published_at"),
+            "sentiment": sentiment,
+        }
+        stmt = (
+            pg_insert(NewsArticle)
+            .values(company_id=company_id, url=article["url"], **fields)
+            .on_conflict_do_update(
+                index_elements=[NewsArticle.company_id, NewsArticle.url],
+                set_=fields,
+            )
+        )
+        db.execute(stmt)
+
+
+def recent_news(db: Session, company_id: int, limit: int = 6) -> list[NewsArticle]:
+    return list(
+        db.scalars(
+            select(NewsArticle)
+            .where(NewsArticle.company_id == company_id)
+            .order_by(NewsArticle.published_at.desc().nulls_last())
+            .limit(limit)
+        ).all()
+    )

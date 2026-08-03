@@ -1,4 +1,6 @@
-from app.db.models import Company, CoverageTier, PriceBar, WikiSectionKey
+from datetime import datetime, timezone
+
+from app.db.models import Company, CoverageTier, NewsArticle, PriceBar, Sentiment, WikiSectionKey
 from app.services import wiki_sections_service
 
 
@@ -43,9 +45,56 @@ def test_render_key_metrics_with_bar():
     assert "Day range: 8.00 - 12.00" in metrics
 
 
+def test_render_key_metrics_includes_technicals_when_available():
+    company = _company()
+    price_summary = {"change_1d_pct": 1.5, "change_1m_pct": None, "change_1y_pct": None}
+    swing_levels = {"high_20d": 12.0, "low_20d": 8.0}
+
+    metrics = wiki_sections_service.render_key_metrics(company, None, price_summary, swing_levels)
+
+    assert "1D change: +1.50%" in metrics
+    assert "20d range: 8.00 - 12.00" in metrics
+    assert "1M change" not in metrics  # null values are omitted, not shown as "None"
+
+
+def test_render_news_digest_no_articles_is_honest():
+    assert wiki_sections_service.render_news_digest([]) == wiki_sections_service.NOT_YET_INGESTED[
+        WikiSectionKey.news_digest
+    ]
+
+
+def test_render_news_digest_with_articles():
+    article = NewsArticle(
+        company_id=1,
+        headline="Company announces record earnings",
+        source="Reuters",
+        published_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        sentiment=Sentiment.positive,
+        url="https://example.com/a",
+    )
+
+    digest = wiki_sections_service.render_news_digest([article])
+
+    assert "Company announces record earnings" in digest
+    assert "(Reuters)" in digest
+    assert "2026-01-15" in digest
+    assert "[positive]" in digest
+
+
 def test_render_sections_includes_not_yet_ingested_placeholders():
     sections = wiki_sections_service.render_sections(_company(), None)
     assert sections[WikiSectionKey.financials_summary] == wiki_sections_service.NOT_YET_INGESTED[
         WikiSectionKey.financials_summary
     ]
+    assert sections[WikiSectionKey.news_digest] == wiki_sections_service.NOT_YET_INGESTED[
+        WikiSectionKey.news_digest
+    ]
     assert set(sections.keys()) == set(WikiSectionKey)
+
+
+def test_render_sections_uses_real_news_when_provided():
+    article = NewsArticle(company_id=1, headline="Real headline", url="https://example.com/b")
+
+    sections = wiki_sections_service.render_sections(_company(), None, articles=[article])
+
+    assert "Real headline" in sections[WikiSectionKey.news_digest]

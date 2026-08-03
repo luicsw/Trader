@@ -22,6 +22,8 @@ class DataProvider(ABC):
     never need to know which provider actually answered:
     - get_profile: {name, exchange, sector, logo_url, market_cap}
     - get_quote: {open, high, low, close, previous_close}
+    - get_news: list of {headline, summary, source, published_at (datetime|None),
+      sentiment ("positive"|"neutral"|"negative"|None), url}
     """
 
     @abstractmethod
@@ -30,4 +32,8 @@ class DataProvider(ABC):
 
     @abstractmethod
     def get_quote(self, ticker: str) -> dict:
+        ...
+
+    @abstractmethod
+    def get_news(self, ticker: str) -> list[dict]:
         ...

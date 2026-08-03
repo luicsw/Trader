@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import httpx
 
 from app.providers.base import DataProvider, PermanentProviderError, TransientProviderError
@@ -46,6 +48,30 @@ class AlphaVantageClient(DataProvider):
             "previous_close": _to_float(quote.get("08. previous close")),
         }
 
+    def get_news(self, ticker: str) -> list[dict]:
+        # Unlike Finnhub, NEWS_SENTIMENT genuinely classifies sentiment -- an empty feed is a
+        # normal outcome (no recent coverage), not an error.
+        data = self._get({"function": "NEWS_SENTIMENT", "tickers": ticker}, ticker)
+        feed = data.get("feed") or []
+
+        articles = []
+        for item in feed:
+            title = item.get("title")
+            url = item.get("url")
+            if not title or not url:
+                continue
+            articles.append(
+                {
+                    "headline": title,
+                    "summary": item.get("summary") or None,
+                    "source": item.get("source"),
+                    "published_at": _parse_time_published(item.get("time_published")),
+                    "sentiment": _map_sentiment_label(item.get("overall_sentiment_label")),
+                    "url": url,
+                }
+            )
+        return articles
+
     def _get(self, params: dict, ticker: str) -> dict:
         try:
             response = self._client.get(BASE_URL, params={**params, "apikey": self._api_key})
@@ -83,3 +109,25 @@ def _to_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_time_published(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _map_sentiment_label(label: str | None) -> str | None:
+    if not label:
+        return None
+    label = label.lower()
+    if "bullish" in label:
+        return "positive"
+    if "bearish" in label:
+        return "negative"
+    if "neutral" in label:
+        return "neutral"
+    return None

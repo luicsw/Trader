@@ -21,13 +21,22 @@ _BUDGETS = {
         "alpha_vantage_rate_limit_per_window",
         "alpha_vantage_rate_limit_window_seconds",
     ),
+    ProviderName.gemini: (
+        "gemini_rate_limit_per_window",
+        "gemini_rate_limit_window_seconds",
+    ),
 }
 
 
-def allow(db: Session, provider: ProviderName) -> bool:
-    """True if `provider` is under budget for its current window."""
+def allow(db: Session, provider: ProviderName, budget_fraction: float = 1.0) -> bool:
+    """True if `provider` is under budget for its current window.
+
+    `budget_fraction` lets lower-priority callers get throttled before the full budget is
+    exhausted -- e.g. on-demand/critique Gemini calls check against a smaller fraction than
+    scheduled ones, reserving headroom for higher-priority callers (spec.md FR-17, FR-20).
+    """
     limit_attr, window_attr = _BUDGETS[provider]
-    limit = getattr(settings, limit_attr)
+    limit = getattr(settings, limit_attr) * budget_fraction
     window_seconds = getattr(settings, window_attr)
     since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
 

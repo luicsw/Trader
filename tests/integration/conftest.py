@@ -2,11 +2,13 @@
 transaction that's rolled back afterward, so nothing persists in the shared dev database.
 """
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import ProviderCallLog
-from app.db.session import engine
+from app.db.session import engine, get_db
+from app.main import app
 
 
 @pytest.fixture
@@ -26,3 +28,22 @@ def db_session():
         session.close()
         transaction.rollback()
         connection.close()
+
+
+@pytest.fixture
+def client(db_session):
+    """A TestClient wired to `db_session` instead of the app's real database connection, so
+    HTTP-level router tests get the same rolled-back-transaction isolation as service-level
+    tests -- otherwise every request would write real, permanently-committed rows to the
+    shared dev database (see tests/integration/test_refresh_router.py's history for why that
+    was a real, non-hypothetical problem).
+    """
+
+    def _override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.pop(get_db, None)

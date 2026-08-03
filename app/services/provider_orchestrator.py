@@ -47,6 +47,39 @@ def fetch_with_fallback(db, ticker: str) -> dict:
     )
 
 
+def fetch_news_best_effort(db, ticker: str) -> list[dict]:
+    """Best-effort news fetch: tries each configured provider once, respecting the same
+    rate limits/circuit breakers and logging every attempt to provider_call_log, but NEVER
+    raises -- news is a supplementary signal, not the core pipeline, so a failure here must
+    never block or fail the primary profile/quote refresh. No retry (unlike
+    fetch_with_fallback) since this is explicitly a best-effort secondary fetch. Returns []
+    if every provider is unavailable or fails.
+
+    Deliberately catches Exception, not just ProviderError -- this is the one place in the
+    app where an unexpected exception (a provider bug, a malformed response) should still
+    never propagate, since news is strictly a nice-to-have signal, never worth failing a
+    refresh cycle over.
+    """
+    for name, client in _configured_providers():
+        if not circuit_breaker.is_available(db, name):
+            continue
+        if not rate_limiter.allow(db, name):
+            continue
+
+        try:
+            articles = client.get_news(ticker)
+        except Exception:
+            rate_limiter.record_call(db, name, CallStatus.failure)
+            db.commit()
+            continue
+
+        rate_limiter.record_call(db, name, CallStatus.success)
+        db.commit()
+        return articles
+
+    return []
+
+
 def _configured_providers() -> list[tuple[ProviderName, DataProvider]]:
     providers: list[tuple[ProviderName, DataProvider]] = []
     if settings.finnhub_api_key:

@@ -119,3 +119,71 @@ def test_raises_when_all_providers_fail(db_session):
 
     with pytest.raises(PermanentProviderError):
         provider_orchestrator.fetch_with_fallback(db_session, "AAPL")
+
+
+@respx.mock
+def test_fetch_news_best_effort_uses_finnhub_when_healthy(db_session):
+    respx.get("https://finnhub.io/api/v1/company-news").mock(
+        return_value=httpx.Response(
+            200, json=[{"headline": "News", "url": "https://example.com/n", "datetime": 1735689600}]
+        )
+    )
+
+    articles = provider_orchestrator.fetch_news_best_effort(db_session, "AAPL")
+
+    assert len(articles) == 1
+    logs = db_session.query(ProviderCallLog).filter_by(provider=ProviderName.finnhub).all()
+    assert len(logs) == 1
+    assert logs[0].status == CallStatus.success
+
+
+@respx.mock
+def test_fetch_news_best_effort_falls_back_on_finnhub_failure(db_session):
+    respx.get("https://finnhub.io/api/v1/company-news").mock(return_value=httpx.Response(503))
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "feed": [
+                    {
+                        "title": "AV News",
+                        "url": "https://example.com/av-n",
+                        "time_published": "20250101T093000",
+                    }
+                ]
+            },
+        )
+    )
+
+    articles = provider_orchestrator.fetch_news_best_effort(db_session, "AAPL")
+
+    assert len(articles) == 1
+    assert articles[0]["headline"] == "AV News"
+
+
+@respx.mock
+def test_fetch_news_best_effort_never_raises_when_all_providers_fail(db_session):
+    respx.get("https://finnhub.io/api/v1/company-news").mock(return_value=httpx.Response(503))
+    respx.get("https://www.alphavantage.co/query").mock(return_value=httpx.Response(503))
+
+    articles = provider_orchestrator.fetch_news_best_effort(db_session, "AAPL")
+
+    assert articles == []
+
+
+@respx.mock
+def test_fetch_news_best_effort_skips_provider_with_open_circuit(db_session):
+    now = datetime.now(timezone.utc)
+    for _ in range(settings.circuit_breaker_failure_threshold):
+        db_session.add(ProviderCallLog(provider=ProviderName.finnhub, status=CallStatus.failure, called_at=now))
+    db_session.commit()
+    finnhub_route = respx.get("https://finnhub.io/api/v1/company-news").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(200, json={"feed": []})
+    )
+
+    provider_orchestrator.fetch_news_best_effort(db_session, "AAPL")
+
+    assert finnhub_route.call_count == 0

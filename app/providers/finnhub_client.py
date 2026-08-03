@@ -1,8 +1,11 @@
+from datetime import datetime, timedelta, timezone
+
 import httpx
 
 from app.providers.base import DataProvider, PermanentProviderError, TransientProviderError
 
 BASE_URL = "https://finnhub.io/api/v1"
+NEWS_LOOKBACK_DAYS = 7
 
 
 class FinnhubClient(DataProvider):
@@ -13,7 +16,7 @@ class FinnhubClient(DataProvider):
         self._client = httpx.Client(base_url=BASE_URL, timeout=timeout)
 
     def get_profile(self, ticker: str) -> dict:
-        data = self._get("/stock/profile2", ticker)
+        data = self._get("/stock/profile2", ticker, {"symbol": ticker})
         if not data:
             raise PermanentProviderError(
                 f"Finnhub returned an empty profile for {ticker!r} -- likely an invalid ticker"
@@ -27,7 +30,7 @@ class FinnhubClient(DataProvider):
         }
 
     def get_quote(self, ticker: str) -> dict:
-        data = self._get("/quote", ticker)
+        data = self._get("/quote", ticker, {"symbol": ticker})
         if data.get("c") is None:
             raise PermanentProviderError(f"Finnhub returned no quote data for {ticker!r}")
         return {
@@ -38,9 +41,45 @@ class FinnhubClient(DataProvider):
             "previous_close": data.get("pc"),
         }
 
-    def _get(self, path: str, ticker: str) -> dict:
+    def get_news(self, ticker: str) -> list[dict]:
+        # Finnhub's free tier doesn't classify sentiment -- "sentiment" stays None here, and
+        # Alpha Vantage's NEWS_SENTIMENT (used as fallback) is what actually populates it when
+        # available. An empty list is a normal outcome (no recent news), not an error.
+        today = datetime.now(timezone.utc).date()
+        since = today - timedelta(days=NEWS_LOOKBACK_DAYS)
+        data = self._get(
+            "/company-news",
+            ticker,
+            {"symbol": ticker, "from": since.isoformat(), "to": today.isoformat()},
+        )
+        if not isinstance(data, list):
+            return []
+
+        articles = []
+        for item in data:
+            headline = item.get("headline")
+            url = item.get("url")
+            if not headline or not url:
+                continue
+            published_at = None
+            ts = item.get("datetime")
+            if ts:
+                published_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+            articles.append(
+                {
+                    "headline": headline,
+                    "summary": item.get("summary") or None,
+                    "source": item.get("source"),
+                    "published_at": published_at,
+                    "sentiment": None,
+                    "url": url,
+                }
+            )
+        return articles
+
+    def _get(self, path: str, ticker: str, params: dict) -> dict | list:
         try:
-            response = self._client.get(path, params={"symbol": ticker, "token": self._api_key})
+            response = self._client.get(path, params={**params, "token": self._api_key})
         except httpx.TimeoutException as exc:
             raise TransientProviderError(f"Finnhub request timed out for {ticker!r}") from exc
         except httpx.TransportError as exc:

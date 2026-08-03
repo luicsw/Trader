@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -35,6 +37,25 @@ class WikiSectionKey(str, enum.Enum):
 class ProviderName(str, enum.Enum):
     finnhub = "finnhub"
     alpha_vantage = "alpha_vantage"
+    gemini = "gemini"
+
+
+class Sentiment(str, enum.Enum):
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+
+
+class Verdict(str, enum.Enum):
+    buy = "buy"
+    hold = "hold"
+    sell = "sell"
+
+
+class AnalysisTrigger(str, enum.Enum):
+    scheduled = "scheduled"
+    on_demand = "on_demand"
+    initial = "initial"
 
 
 class CallStatus(str, enum.Enum):
@@ -68,6 +89,7 @@ class Company(Base):
     price_bars: Mapped[list["PriceBar"]] = relationship(back_populates="company")
     wiki_sections: Mapped[list["WikiSection"]] = relationship(back_populates="company")
     watchlist_entry: Mapped["Watchlist | None"] = relationship(back_populates="company")
+    news_articles: Mapped[list["NewsArticle"]] = relationship(back_populates="company")
 
 
 class PriceBar(Base):
@@ -103,6 +125,25 @@ class WikiSection(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     company: Mapped["Company"] = relationship(back_populates="wiki_sections")
+
+
+class NewsArticle(Base):
+    __tablename__ = "news_articles"
+    __table_args__ = (
+        UniqueConstraint("company_id", "url", name="uq_news_article_company_url"),
+        Index("ix_news_article_company_published_at", "company_id", "published_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    headline: Mapped[str] = mapped_column(String)
+    summary: Mapped[str | None] = mapped_column(String)
+    url: Mapped[str] = mapped_column(String(1024))
+    source: Mapped[str | None] = mapped_column(String(128))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sentiment: Mapped[Sentiment | None] = mapped_column(Enum(Sentiment, name="sentiment"))
+
+    company: Mapped["Company"] = relationship(back_populates="news_articles")
 
 
 class Watchlist(Base):
@@ -144,3 +185,46 @@ class JobRun(Base):
     error_message: Mapped[str | None] = mapped_column(String)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiAnalysis(Base):
+    """One row per verdict ever generated -- append-only, never overwritten (spec.md FR-15)."""
+
+    __tablename__ = "ai_analyses"
+    __table_args__ = (
+        Index("ix_ai_analyses_company_generated_at", "company_id", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    verdict: Mapped[Verdict] = mapped_column(Enum(Verdict, name="verdict"))
+    confidence: Mapped[float] = mapped_column(Float)
+    reasoning_text: Mapped[str] = mapped_column(String)
+    price_targets: Mapped[dict] = mapped_column(JSONB)
+    hold_period_days: Mapped[dict] = mapped_column(JSONB)
+    cited_sources: Mapped[list] = mapped_column(JSONB)
+    context_snapshot: Mapped[dict] = mapped_column(JSONB)
+    trigger: Mapped[AnalysisTrigger] = mapped_column(Enum(AnalysisTrigger, name="analysistrigger"))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    company: Mapped["Company"] = relationship()
+    critiques: Mapped[list["AiCritique"]] = relationship(back_populates="analysis")
+
+
+class AiCritique(Base):
+    """One row per second-opinion critique ever generated -- append-only, always on-demand
+    (spec.md FR-18 to FR-20). One-to-many: an analysis can be critiqued more than once.
+    """
+
+    __tablename__ = "ai_critiques"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("ai_analyses.id"))
+    agrees_with_verdict_direction: Mapped[bool] = mapped_column(Boolean)
+    biggest_weakness: Mapped[str] = mapped_column(String)
+    revised_price_targets: Mapped[dict] = mapped_column(JSONB)
+    revised_confidence: Mapped[float | None] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(String)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    analysis: Mapped["AiAnalysis"] = relationship(back_populates="critiques")

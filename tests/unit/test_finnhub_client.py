@@ -106,3 +106,40 @@ def test_get_quote_missing_price_raises_permanent_error():
 def test_missing_api_key_raises_permanent_error_immediately():
     with pytest.raises(PermanentProviderError):
         FinnhubClient(api_key="")
+
+
+@respx.mock
+def test_get_news_returns_normalized_articles():
+    respx.get("https://finnhub.io/api/v1/company-news").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "headline": "Apple announces new product",
+                    "summary": "Details inside",
+                    "source": "Reuters",
+                    "datetime": 1735689600,
+                    "url": "https://example.com/apple-news",
+                },
+                {"headline": "", "url": "https://example.com/missing-headline"},
+            ],
+        )
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    articles = client.get_news("AAPL")
+
+    assert len(articles) == 1
+    assert articles[0]["headline"] == "Apple announces new product"
+    assert articles[0]["sentiment"] is None  # Finnhub free tier doesn't classify sentiment
+    assert articles[0]["published_at"].year == 2025
+
+
+@respx.mock
+def test_get_news_empty_list_is_not_an_error():
+    respx.get("https://finnhub.io/api/v1/company-news").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    assert client.get_news("AAPL") == []
