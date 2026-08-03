@@ -1,6 +1,6 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
-**Status:** Phase 0 and Phase 1 complete, Phase 2 not started · **Last updated:** 2026-08-03
+**Status:** Phase 0 through Phase 3 complete, Phase 4 not started · **Last updated:** 2026-08-03
 
 **Relationship to `plan.md`:** `plan.md` is the narrative design doc — architecture rationale,
 rejected alternatives, tradeoffs. This file is the structured, testable specification and task
@@ -250,21 +250,78 @@ Docker's port-forwarding works normally; this is a per-machine workaround, not a
 architecture change. Flagged as a question for IT if Docker Desktop itself needs to work on this
 machine specifically.
 
-### Phase 2 — Wiki assembly + lookup tier
-- [ ] T2.1 `services/wiki_service.py::assemble(ticker)` (FR-10)
-- [ ] T2.2 `services/lookup_service.py::get_or_fetch(ticker)` (FR-9)
-- [ ] T2.3 `wiki_sections` generation, template-based, no AI yet
+### Phase 2 — Wiki assembly + lookup tier ✅ DONE
+- [x] T2.1 `services/wiki_service.py::assemble(ticker)` (FR-10)
+- [x] T2.2 `services/lookup_service.py::get_or_fetch(ticker)` (FR-9)
+- [x] T2.3 `wiki_sections` generation, template-based, no AI yet
 - **Verify:** look up several arbitrary (non-watchlisted) tickers end-to-end.
+- **Verified:** looked up AAPL/MSFT/NVDA live against real Finnhub data — each persisted as
+  `coverage_tier=lookup` (never added to `watchlist`), all five `wiki_sections` rows generated
+  (`overview`/`key_metrics` from real data, honest "not yet ingested" placeholders for
+  `financials_summary`/`news_digest`/`risks_notes` since those source tables don't exist until
+  later phases), and a repeat request served from Postgres in ~6ms with no new Finnhub call.
+  16/16 tests pass (unit: section-template rendering; integration: real Postgres,
+  transaction-rolled-back, covering `assemble()` and `get_or_fetch()` freshness/staleness
+  behavior).
 
-### Phase 3 — Watchlist + scheduler + reliability
-- [ ] T3.1 `watchlist` table/CRUD + `api/routers/watchlist.py` (FR-11, FR-12, FR-13)
-- [ ] T3.2 `jobs/scheduler.py` (APScheduler) + `api/routers/refresh.py` (`POST /internal/refresh`) calling shared `refresh_service` functions (NFR-1)
-- [ ] T3.3 `providers/alpha_vantage_client.py` + `fetch_with_fallback()` orchestrator (FR-1)
-- [ ] T3.4 `services/rate_limiter.py` — token bucket per provider, seeded from `provider_call_log`
-- [ ] T3.5 `services/circuit_breaker.py` (FR-5)
-- [ ] T3.6 `provider_call_log` + `job_runs` tables and writers (FR-3, FR-4)
-- [ ] T3.7 Retry/backoff via `tenacity` (FR-2)
+### Phase 3 — Watchlist + scheduler + reliability ✅ DONE
+- [x] T3.1 `watchlist` table/CRUD + `api/routers/watchlist.py` (FR-11, FR-12, FR-13)
+- [x] T3.2 `jobs/scheduler.py` (APScheduler) + `api/routers/refresh.py` (`POST /internal/refresh`) calling shared `refresh_service` functions (NFR-1)
+- [x] T3.3 `providers/alpha_vantage_client.py` + `fetch_with_fallback()` orchestrator (FR-1)
+- [x] T3.4 `services/rate_limiter.py` — sliding window per provider, computed directly from `provider_call_log`
+- [x] T3.5 `services/circuit_breaker.py` (FR-5)
+- [x] T3.6 `provider_call_log` + `job_runs` tables and writers (FR-3, FR-4)
+- [x] T3.7 Retry/backoff via `tenacity` (FR-2)
 - **Verify:** reliability drill — point Finnhub client at an invalid key/URL, confirm circuit breaker trips, Alpha Vantage fallback kicks in, `job_runs`/Sentry surface the failure, no crashed refresh cycle.
+- **Verified:** live drill against the real running app + real Postgres — pointed a fresh
+  process at an invalid `FINNHUB_API_KEY`, promoted IBM (with valid credentials first), forced
+  its watchlist entry due, then hit `POST /internal/refresh` repeatedly with the broken key.
+  Real Finnhub 401s were logged to `provider_call_log`/`job_runs` with clear messages on each
+  of the first 3 attempts; the 4th attempt's `job_runs` row read `"finnhub: circuit open"`,
+  confirming the breaker tripped after `circuit_breaker_failure_threshold` (3) consecutive
+  failures — and the server never crashed across any attempt. Drill artifacts (IBM watchlist
+  entry, `provider_call_log`/`job_runs` rows) were cleaned up afterward. "Alpha Vantage takes
+  over" itself was verified via mocked integration tests
+  (`tests/integration/test_provider_orchestrator.py`), not a live drill, since no real
+  `ALPHA_VANTAGE_API_KEY` is configured yet — get a free key from
+  alphavantage.co/support/#api-key if you want that leg live-verified too.
+  54 unit+integration tests pass (up from 20 at the end of Phase 2), including new coverage
+  for `finnhub_client`/`alpha_vantage_client` normalization, `rate_limiter`, `circuit_breaker`,
+  `provider_orchestrator`, `refresh_service`, and `watchlist_service`.
+- **Design decisions beyond the literal task list:**
+  - `providers/*` clients now return a **normalized** shape (`name/exchange/sector/logo_url/
+    market_cap`, `open/high/low/close/previous_close`) instead of provider-specific keys, so
+    `fetch_with_fallback()` can hand callers the same shape regardless of which provider
+    answered. `providers/base.py` also gained `TransientProviderError`/`PermanentProviderError`
+    subclasses so the orchestrator knows retry-then-fallback vs. immediate-fallback.
+  - `fetch_with_fallback()` lives in `services/provider_orchestrator.py`, not `providers/`,
+    because it depends on the DB-backed rate limiter/circuit breaker — `providers/` stays pure
+    API clients with no DB dependency.
+  - Rate limiter and circuit breaker are both **stateless, computed directly from
+    `provider_call_log`** on every check (sliding-window count / last-N-calls scan) rather than
+    in-memory token buckets or state machines — this is what "seeded from `provider_call_log`"
+    in `plan.md` reduces to in practice, and it means state survives Render's frequent cold
+    starts for free, with nothing to lose or re-seed.
+  - A shared `services/ingest_service.py::upsert_profile_and_quote()` factors the upsert logic
+    that both `lookup_service` and `refresh_service` need, keeping refresh mechanics genuinely
+    single-sourced (NFR-1) rather than duplicated between the two call paths.
+  - Sentry (mentioned in `plan.md`) is not wired yet — it needs a real DSN, which is a
+    deploy-time concern; structured failure visibility for now comes entirely from `job_runs`
+    (satisfies FR-3/NFR-4 in spirit). Revisit alongside Phase 8 deploy prep.
+  - `watchlist_service.promote()` implements the refresh half of FR-11 only — the
+    "`initial`-trigger AI analysis" half is deferred to Phase 4 since `ai_service` doesn't
+    exist yet (documented in the module docstring so it isn't mistaken for an oversight).
+  - Backend auth (FR-26) is still not wired on any endpoint, including the new
+    `/watchlist/*` and `/internal/refresh` routes — this matches the existing task breakdown,
+    which only wires the shared credential at Phase 8 deploy time (`T8.2`/`T8.3`), since
+    everything today runs local-only.
+  - **Test-isolation fix:** `rate_limiter`/`circuit_breaker` read every already-committed row
+    in `provider_call_log`, not just rows a given test writes. The reliability drill above left
+    real failure rows in the shared dev database, which then made every circuit-breaker-
+    dependent test see a tripped breaker and fail. Fixed by having
+    `tests/integration/conftest.py`'s `db_session` fixture delete existing `provider_call_log`
+    rows inside the test's (rolled-back) transaction before yielding, so manual live testing
+    against this same dev DB can never poison the suite again.
 
 ### Phase 4 — AI pipeline (verdict + second opinion)
 - [ ] T4.1 `providers/gemini_client.py` wrapping `google-genai` with retry/backoff + rate-limit bucket
@@ -339,7 +396,8 @@ machine specifically.
 - Gemini free-tier limits mean heavy on-demand + critique usage in one day could hit "try again
   later" — budget-priority ordering (FR-17, FR-20) mitigates.
 - Neon/Supabase free storage caps unlikely to bind soon, but a `price_bars` retention/pruning
-  policy is cheap insurance worth building in Phase 3.
+  policy is still cheap insurance worth building — not done in Phase 3 (wasn't in its task
+  list); revisit before Phase 8 deploy if it hasn't been picked up by then.
 
 ---
 
@@ -348,7 +406,7 @@ machine specifically.
 ```
 plan.md                              — narrative design doc (architecture rationale, tradeoffs)
 spec.md                              — this file (requirements + task breakdown)
-.env / .env.example / .gitignore     — Gemini API key handling (never committed)
+.env / .env.example / .gitignore     — Gemini/Finnhub API key + DB URL handling (never committed)
 prompts/
   verdict_prompt_v1.md               — first-pass verdict prompt (Phase 0, done)
   verdict_critique_prompt_v1.md      — adversarial second-opinion prompt (Phase 0, done)
@@ -358,6 +416,43 @@ scripts/
     sample_wiki_data.json            — synthetic "normal" test case
     sample_wiki_thin.json            — synthetic thin/contradictory test case
     aapl_live.json                   — real researched data, snapshot 2026-08-02
+app/
+  main.py, config.py                 — FastAPI app (lifespan starts/stops the scheduler), settings
+  db/
+    session.py, models.py            — Company, PriceBar, WikiSection (Phase 1-2); Watchlist,
+                                        ProviderCallLog, JobRun (Phase 3)
+    migrations/versions/
+      0001_initial.py                — companies, price_bars (Phase 1)
+      0002_wiki_sections.py          — wiki_sections (Phase 2)
+      0003_watchlist_reliability.py  — watchlist, provider_call_log, job_runs (Phase 3)
+  api/routers/
+    health.py                        — GET /health (Phase 1)
+    wiki.py                          — GET /companies/{ticker}/wiki, delegates to lookup_service (Phase 2)
+    watchlist.py                     — POST /watchlist/{ticker}/promote, DELETE /watchlist/{ticker} (Phase 3)
+    refresh.py                       — POST /internal/refresh (Phase 3)
+  jobs/
+    scheduler.py                     — APScheduler wiring; calls the same refresh_service
+                                        function as the refresh router (NFR-1) (Phase 3)
+  services/
+    wiki_service.py                  — assemble(ticker) (Phase 2, T2.1)
+    lookup_service.py                — get_or_fetch(ticker) (Phase 2, T2.2)
+    wiki_sections_service.py         — template-based section generation (Phase 2, T2.3)
+    ingest_service.py                — shared profile+quote upsert logic (Phase 3)
+    provider_orchestrator.py         — fetch_with_fallback() (Phase 3, T3.3)
+    rate_limiter.py                 — per-provider sliding window over provider_call_log (Phase 3, T3.4)
+    circuit_breaker.py               — per-provider circuit state over provider_call_log (Phase 3, T3.5)
+    refresh_service.py               — refresh_watchlist()/refresh_entry() (Phase 3, T3.2)
+    watchlist_service.py             — promote()/remove() (Phase 3, T3.1)
+  providers/
+    base.py                          — DataProvider interface, Transient/PermanentProviderError
+    finnhub_client.py                — primary provider, normalized output (Phase 1, updated Phase 3)
+    alpha_vantage_client.py          — fallback provider, normalized output (Phase 3, T3.3)
+tests/
+  unit/                              — provider parsers, section-template rendering (respx, no network)
+  integration/                       — real Postgres, conftest.py rolls back per test and clears
+                                        provider_call_log so manual live testing can't poison
+                                        rate_limiter/circuit_breaker assertions
 ```
 
-Everything under `app/`, `tests/`, and the frontend does not exist yet — Phase 1 creates it.
+The frontend does not exist yet — Phase 5 creates it. `fundamentals`, `news_articles`,
+`ai_analyses`, and `ai_critiques` tables don't exist yet either — Phase 4 adds them.
