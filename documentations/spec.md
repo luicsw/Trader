@@ -173,6 +173,7 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `ai_critiques` | analysis_id (FK → ai_analyses), agrees_with_verdict_direction (bool), biggest_weakness (text), revised_price_targets (JSONB, nullable per field), revised_confidence (nullable float), rationale (text), generated_at | Append-only; always on-demand-triggered |
 | `provider_call_log` | provider, status, called_at | Backs rate limiter + circuit breaker; audit trail |
 | `job_runs` | job_name, status, error_message, attempt | Never-silent-failure observability |
+| `verdict_outcomes` *(post-Phase-4 addition)* | analysis_id (FK → ai_analyses), horizon_days, price_at_verdict, price_at_horizon, price_change_pct, directionally_correct, evaluated_at | Append-only; UNIQUE `(analysis_id)` (single fixed horizon) — checks verdict/confidence calibration against actual price, see §9 "Post-Phase-4 Addition" |
 
 ---
 
@@ -191,6 +192,8 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `POST /internal/refresh` | Cron-triggered refresh for all active watchlist tickers | shared credential | Idempotent, safe no-op if too soon |
 | `POST /internal/analyze-scheduled` | Cron-triggered daily scheduled analyses | shared credential | Budget-priority applies (FR-17) |
 | `GET /compare?tickers=A,B,C` | Normalized overlay + peer fundamentals data for 2-5 tickers | shared credential | Backs `/compare` route |
+| `POST /internal/evaluate-outcomes` *(post-Phase-4)* | Cron-triggered evaluation of verdicts past the 30-day horizon | shared credential | Never fails on missing price data, just retries next cycle |
+| `GET /verdicts/track-record` *(post-Phase-4)* | Aggregate accuracy/return by verdict type and by confidence bucket | shared credential | See §9 "Post-Phase-4 Addition" — the calibration check |
 
 ---
 
@@ -377,6 +380,38 @@ machine specifically.
     to the company they seeded from the start. Fixed by scoping both assertions to their own
     `company_id`(s) rather than broadening the fixture to blindly clear a business-data table.
 
+### Post-Phase-4 Addition — Verdict Track Record ✅ DONE
+Not part of the original phase numbering — added in response to a direct question about
+whether the verdicts should actually be trusted. The honest answer at the end of Phase 4 was
+"the engineering is sound, the judgment quality is unproven" (see §12 discussion below); this
+closes part of that gap by making calibration checkable instead of assumed.
+
+- [x] `verdict_outcomes` table + migration `0007` — append-only, one row per analysis at a
+  single fixed 30-day horizon (`settings.verdict_outcome_horizon_days`)
+- [x] `services/outcome_service.py::evaluate_pending_outcomes(db)` — reuses the exact
+  `last_close` already stamped into `ai_analyses.context_snapshot` at verdict time (no
+  re-query needed, and guarantees the comparison is against precisely what the AI saw), looks
+  up the nearest `price_bars` row at/after the horizon, computes `price_change_pct` and
+  `directionally_correct` (`buy`>0%, `sell`<0%, `hold` within ±`verdict_outcome_hold_band_pct`
+  = 5%). Skips (never fails) analyses with no horizon price data yet — retried next cycle.
+- [x] Wired the same dual-trigger pattern as everything else (NFR-1): APScheduler daily job +
+  `POST /internal/evaluate-outcomes`, identical underlying function.
+- [x] `GET /verdicts/track-record` — count/avg-return/%-directionally-correct grouped by
+  verdict type, plus a confidence-bucket breakdown (`>=0.6` vs `<0.6`) — this second breakdown
+  is the actual calibration check: whether verdicts the AI was more confident about really did
+  better than the ones it wasn't, not just whether it sounded sure.
+- **Verify:** unit tests for the correctness logic, integration tests for the evaluation batch
+  (skip-too-recent, skip-missing-data, no-duplicate-evaluation), HTTP-level tests for both
+  routes.
+- **Verified:** 132/132 tests pass (17 new). Full detail, including a real scheduler bug found
+  and fixed while testing this (`BackgroundScheduler` can't be restarted after `shutdown()` —
+  latent since Phase 3, never surfaced until a second job needed adding), in
+  [`tests/outcome-tracking.md`](tests/outcome-tracking.md).
+- **Honest limitation:** this data won't be meaningful for weeks — it needs real elapsed time
+  and real accumulated `price_bars` history before there's a large enough sample to say
+  anything about calibration. Built now because it's small and self-contained, not because
+  it's urgent.
+
 ### Phase 5 — Frontend core
 - [ ] T5.1 Vite + React + TypeScript scaffold, Tailwind, React Router, React Query provider
 - [ ] T5.2 `/login` auth gate (shared bearer credential, stored client-side)
@@ -443,6 +478,17 @@ machine specifically.
 - Neon/Supabase free storage caps unlikely to bind soon, but a `price_bars` retention/pruning
   policy is still cheap insurance worth building — not done in Phase 3 (wasn't in its task
   list); revisit before Phase 8 deploy if it hasn't been picked up by then.
+- **The AI's actual investment judgment is unproven, separate from the engineering around it
+  being sound.** Raised directly after Phase 4's live verification: today's verdicts reason
+  over a real price snapshot plus little else (no fundamentals ingested at all; news is often
+  unavailable depending on provider free-tier access; computed technicals need weeks of real
+  `price_bars` history to mean anything and today have almost none) — a single non-deterministic
+  LLM call with no backtesting or track record. The low confidence scores the model returns on
+  thin data are honest, not a flaw, but that doesn't make the underlying judgment reliable yet.
+  Partially addressed by the verdict-outcomes tracking below (calibration becomes checkable
+  instead of assumed); not addressed by it: still no fundamentals, still one AI call, still no
+  validated edge. Treat current verdicts as a research starting point, not a trusted answer,
+  until real track-record data accumulates over weeks/months.
 
 ---
 
@@ -466,7 +512,7 @@ app/
   db/
     session.py, models.py            — Company, PriceBar, WikiSection (Phase 1-2); Watchlist,
                                         ProviderCallLog, JobRun (Phase 3); NewsArticle, AiAnalysis,
-                                        AiCritique (Phase 4)
+                                        AiCritique (Phase 4); VerdictOutcome (post-Phase-4)
     migrations/versions/
       0001_initial.py                — companies, price_bars (Phase 1)
       0002_wiki_sections.py          — wiki_sections (Phase 2)
@@ -474,6 +520,7 @@ app/
       0004_news_articles.py          — news_articles (Phase 4)
       0005_ai_analyses_and_critiques.py — ai_analyses, ai_critiques (Phase 4)
       0006_add_gemini_provider.py    — adds 'gemini' to the providername enum (Phase 4)
+      0007_verdict_outcomes.py       — verdict_outcomes (post-Phase-4)
   api/routers/
     health.py                        — GET /health (Phase 1)
     wiki.py                          — GET /companies/{ticker}/wiki, delegates to lookup_service (Phase 2)
@@ -481,9 +528,12 @@ app/
     refresh.py                       — POST /internal/refresh (Phase 3)
     analysis.py                      — POST /companies/{ticker}/analyze, /internal/analyze-scheduled,
                                         /companies/{ticker}/critique (watchlist-only) (Phase 4)
+    outcomes.py                      — POST /internal/evaluate-outcomes, GET /verdicts/track-record
+                                        (post-Phase-4)
   jobs/
-    scheduler.py                     — APScheduler wiring; calls the same refresh_service
-                                        function as the refresh router (NFR-1) (Phase 3)
+    scheduler.py                     — APScheduler wiring; calls the same refresh_service/
+                                        outcome_service functions as their cron-facing routes
+                                        (NFR-1) (Phase 3, extended post-Phase-4)
   services/
     wiki_service.py                  — assemble(ticker), now also surfaces recent_news/
                                         price_summary/recent_swing_levels (Phase 2, extended Phase 4)
@@ -505,6 +555,9 @@ app/
     ai_service.py                    — build_prompt()/build_critique_prompt(), generate_verdict(),
                                         analyze_scheduled(), generate_critique(), QuotaExhaustedError
                                         (Phase 4, T4.2-T4.5)
+    outcome_service.py                — evaluate_pending_outcomes(): verdict vs actual price at a
+                                        fixed horizon, reuses context_snapshot's snapshotted price
+                                        (post-Phase-4)
   providers/
     base.py                          — DataProvider interface (get_profile/get_quote/get_news),
                                         Transient/PermanentProviderError

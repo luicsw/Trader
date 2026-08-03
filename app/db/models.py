@@ -228,3 +228,24 @@ class AiCritique(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     analysis: Mapped["AiAnalysis"] = relationship(back_populates="critiques")
+
+
+class VerdictOutcome(Base):
+    """One row per evaluated verdict, at a fixed horizon -- append-only, never overwritten
+    (same philosophy as ai_analyses/ai_critiques). Turns "the AI feels confident" into
+    something checkable: did price actually move the way the verdict implied.
+    """
+
+    __tablename__ = "verdict_outcomes"
+    __table_args__ = (UniqueConstraint("analysis_id", name="uq_verdict_outcome_analysis"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("ai_analyses.id"))
+    horizon_days: Mapped[int] = mapped_column(Integer)
+    price_at_verdict: Mapped[float] = mapped_column(Float)
+    price_at_horizon: Mapped[float] = mapped_column(Float)
+    price_change_pct: Mapped[float] = mapped_column(Float)
+    directionally_correct: Mapped[bool] = mapped_column(Boolean)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    analysis: Mapped["AiAnalysis"] = relationship()

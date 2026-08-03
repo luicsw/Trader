@@ -14,7 +14,7 @@ import time
 
 from app.config import settings
 from app.jobs import scheduler
-from app.services import refresh_service
+from app.services import outcome_service, refresh_service
 
 
 def test_start_invokes_refresh_periodically_and_shutdown_stops_it(monkeypatch):
@@ -38,3 +38,21 @@ def test_start_invokes_refresh_periodically_and_shutdown_stops_it(monkeypatch):
     count_at_shutdown = len(calls)
     time.sleep(1.5)  # long enough for another 1s-interval tick to have fired, if it were going to
     assert len(calls) == count_at_shutdown, "job kept firing after shutdown()"
+
+
+def test_start_also_invokes_evaluate_outcomes_periodically(monkeypatch):
+    monkeypatch.setattr(settings, "scheduler_interval_seconds", 3600)  # keep the refresh job quiet
+    monkeypatch.setattr(settings, "outcome_scheduler_interval_seconds", 1)
+    fired = threading.Event()
+
+    def fake_evaluate_pending_outcomes(db):
+        fired.set()
+        return {"checked": 0, "evaluated": [], "skipped": []}
+
+    monkeypatch.setattr(outcome_service, "evaluate_pending_outcomes", fake_evaluate_pending_outcomes)
+
+    scheduler.start()
+    try:
+        assert fired.wait(timeout=5), "scheduler never invoked evaluate_pending_outcomes within 5s"
+    finally:
+        scheduler.shutdown()

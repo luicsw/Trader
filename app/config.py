@@ -34,5 +34,12 @@ class Settings(BaseSettings):
     gemini_on_demand_budget_fraction: float = 0.7
     gemini_critique_budget_fraction: float = 0.4
 
+    # Verdict track record: checks whether verdicts/confidence are actually calibrated
+    # against what price did afterward, rather than trusting the AI's self-reported
+    # confidence at face value.
+    verdict_outcome_horizon_days: int = 30
+    verdict_outcome_hold_band_pct: float = 5.0
+    outcome_scheduler_interval_seconds: int = 86400
+
 
 settings = Settings()

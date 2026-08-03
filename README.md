@@ -29,6 +29,11 @@ started. See [`documentations/spec.md`](documentations/spec.md) §9 for the full
   news sentiment, peer comparison) in a mobile-first installable PWA.
 - Never silently fails: every provider outage, rate limit, or AI quota exhaustion is degraded
   gracefully and surfaced, never hidden.
+- Tracks its own verdicts against what price actually did 30 days later, and whether the AI's
+  confidence score is actually calibrated (do high-confidence verdicts do better than
+  low-confidence ones) — because a single LLM call reasoning over thin real-world data (no
+  fundamentals ingested yet, news often unavailable depending on provider access) shouldn't be
+  trusted just because it sounds sure. See "A note on trust" below.
 
 ## How it works
 
@@ -106,6 +111,19 @@ lowest priority, watchlist-only) at a smaller fraction still. Quota exhaustion a
 gracefully: a scheduled analysis just skips that ticker until next cycle, an on-demand request
 gets a clear "try again later" (`429`), never a silent failure or a generic `500`.
 
+## A note on trust
+
+The engineering above is designed to never silently fail or fabricate confidence — but that's
+a claim about the *plumbing*, not about whether you should act on any given verdict. Today's
+verdicts reason over a real price snapshot plus whatever news happened to be available, with
+no fundamentals ingested at all and technicals that need weeks of real accumulated history to
+mean anything. A low-confidence "hold" on thin data isn't the app being unhelpful — it's the
+honest answer. `GET /verdicts/track-record` exists specifically to make that trustworthiness
+checkable over time instead of assumed: does the AI's stated confidence actually predict
+whether it's right. See [`documentations/spec.md`](documentations/spec.md) §12 for the fuller
+discussion and [`documentations/tests/outcome-tracking.md`](documentations/tests/outcome-tracking.md)
+for how it's tested.
+
 ## What it will look like
 
 The frontend doesn't exist yet (Phase 5+), but the company wiki page — the core
@@ -181,6 +199,8 @@ curl -X POST http://127.0.0.1:8000/internal/refresh          # normally cron-tri
 curl -X POST http://127.0.0.1:8000/companies/AAPL/analyze     # on-demand AI verdict
 curl -X POST http://127.0.0.1:8000/internal/analyze-scheduled # normally cron-triggered
 curl -X POST "http://127.0.0.1:8000/companies/AAPL/critique?analysis_id=1"  # watchlist tickers only
+curl -X POST http://127.0.0.1:8000/internal/evaluate-outcomes  # normally cron-triggered
+curl http://127.0.0.1:8000/verdicts/track-record               # is the AI's confidence calibrated?
 
 # Create a new migration after changing app/db/models.py
 alembic revision -m "describe the change"
@@ -198,11 +218,12 @@ docker compose up -d
 app/
   main.py, config.py        — FastAPI app (lifespan starts/stops the scheduler), settings
   db/                        — SQLAlchemy models + Alembic migrations
-  api/routers/                — health, wiki, watchlist, refresh, analysis (analyze/critique)
-  jobs/scheduler.py          — APScheduler, calls the same function as the cron-facing route
+  api/routers/                — health, wiki, watchlist, refresh, analysis (analyze/critique),
+                                outcomes (evaluate-outcomes/track-record)
+  jobs/scheduler.py          — APScheduler, calls the same functions as their cron-facing routes
   services/                  — wiki_service, lookup_service, refresh_service, watchlist_service,
                                 provider_orchestrator, rate_limiter, circuit_breaker, ingest_service,
-                                technicals_service, ai_service
+                                technicals_service, ai_service, outcome_service
   providers/                 — Finnhub (primary) + Alpha Vantage (fallback) clients, Gemini client
 tests/
   unit/                      — no network, no DB (respx-mocked HTTP, pure-function logic)
