@@ -144,3 +144,41 @@ def test_critique_returns_404_for_unknown_ticker(client):
     response = client.post("/companies/znope/critique?analysis_id=1")
 
     assert response.status_code == 404
+
+
+def test_list_analyses_returns_empty_for_unknown_ticker(client):
+    response = client.get("/companies/znope/analyses")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@respx.mock
+def test_list_analyses_returns_history_with_nested_critiques(client, db_session, monkeypatch):
+    company = Company(ticker="ZRTE", name="History Co", coverage_tier=CoverageTier.watchlist)
+    db_session.add(company)
+    db_session.flush()
+    analysis = AiAnalysis(
+        company_id=company.id,
+        verdict=Verdict.hold,
+        confidence=0.5,
+        reasoning_text="thin data",
+        price_targets={"buy_at_or_below": None, "sell_at_or_above": None, "stop_loss": None},
+        hold_period_days={"min": None, "max": None, "note": None},
+        cited_sources=[],
+        context_snapshot={},
+        trigger=AnalysisTrigger.on_demand,
+    )
+    db_session.add(analysis)
+    db_session.commit()
+    _mock_gemini_client(monkeypatch, CRITIQUE_JSON)
+    client.post(f"/companies/zrte/critique?analysis_id={analysis.id}")
+
+    response = client.get("/companies/zrte/analyses")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["id"] == analysis.id
+    assert len(body[0]["critiques"]) == 1
+    assert body[0]["critiques"][0]["agrees_with_verdict_direction"] is True

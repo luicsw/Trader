@@ -3,7 +3,7 @@ refresh_service so refresh mechanics apply uniformly regardless of trigger sourc
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,49 @@ def recent_bars(db: Session, company_id: int, limit: int = 260) -> list[PriceBar
             .limit(limit)
         ).all()
     )
+
+
+def bar_count(db: Session, company_id: int) -> int:
+    return db.scalar(
+        select(func.count()).select_from(PriceBar).where(PriceBar.company_id == company_id)
+    )
+
+
+def bulk_upsert_bars(db: Session, company_id: int, bars: list[dict]) -> None:
+    """Bulk ON CONFLICT upsert for historical backfill -- one statement for the whole batch
+    instead of one round-trip per bar. Each conflicting row updates with its own values via
+    EXCLUDED, unlike upsert_profile_and_quote's single-row upsert which can use a plain
+    literal dict since there's only ever one row in play there.
+    """
+    if not bars:
+        return
+
+    stmt = pg_insert(PriceBar).values(
+        [
+            {
+                "company_id": company_id,
+                "ts": bar["ts"],
+                "interval": "1d",
+                "open": bar.get("open"),
+                "high": bar.get("high"),
+                "low": bar.get("low"),
+                "close": bar.get("close"),
+                "volume": bar.get("volume"),
+            }
+            for bar in bars
+        ]
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[PriceBar.company_id, PriceBar.ts, PriceBar.interval],
+        set_={
+            "open": stmt.excluded.open,
+            "high": stmt.excluded.high,
+            "low": stmt.excluded.low,
+            "close": stmt.excluded.close,
+            "volume": stmt.excluded.volume,
+        },
+    )
+    db.execute(stmt)
 
 
 def upsert_profile_and_quote(db: Session, ticker: str, profile: dict, quote: dict) -> Company:

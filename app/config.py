@@ -41,5 +41,11 @@ class Settings(BaseSettings):
     verdict_outcome_hold_band_pct: float = 5.0
     outcome_scheduler_interval_seconds: int = 86400
 
+    # Historical backfill on watchlist promote (Alpha Vantage TIME_SERIES_DAILY, compact --
+    # outputsize=full is premium-gated, confirmed live 2026-08-03). Skipped if a company
+    # already has at least this many price_bars rows, so re-promoting or already-tracked
+    # tickers don't spend Alpha Vantage's scarce ~25/day free-tier budget for nothing.
+    backfill_min_bars_threshold: int = 50
+
 
 settings = Settings()

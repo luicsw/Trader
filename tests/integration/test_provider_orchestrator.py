@@ -187,3 +187,99 @@ def test_fetch_news_best_effort_skips_provider_with_open_circuit(db_session):
     provider_orchestrator.fetch_news_best_effort(db_session, "AAPL")
 
     assert finnhub_route.call_count == 0
+
+
+def _mock_alpha_vantage_daily_history():
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Time Series (Daily)": {
+                    "2026-08-03": {"1. open": "10", "2. high": "11", "3. low": "9", "4. close": "10.5", "5. volume": "100"},
+                    "2026-08-01": {"1. open": "9", "2. high": "10", "3. low": "8", "4. close": "9.5", "5. volume": "90"},
+                }
+            },
+        )
+    )
+
+
+@respx.mock
+def test_backfill_price_history_returns_bars_and_logs_success(db_session):
+    _mock_alpha_vantage_daily_history()
+
+    bars = provider_orchestrator.backfill_price_history(db_session, "AAPL")
+
+    assert len(bars) == 2
+    logs = db_session.query(ProviderCallLog).filter_by(provider=ProviderName.alpha_vantage).all()
+    assert len(logs) == 1
+    assert logs[0].status == CallStatus.success
+
+
+def test_backfill_price_history_returns_none_when_not_configured(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "alpha_vantage_api_key", None)
+
+    assert provider_orchestrator.backfill_price_history(db_session, "AAPL") is None
+
+
+@respx.mock
+def test_backfill_price_history_returns_none_on_failure_without_raising(db_session):
+    respx.get("https://www.alphavantage.co/query").mock(return_value=httpx.Response(503))
+
+    result = provider_orchestrator.backfill_price_history(db_session, "AAPL")
+
+    assert result is None
+    log = db_session.query(ProviderCallLog).filter_by(provider=ProviderName.alpha_vantage).one()
+    assert log.status == CallStatus.failure
+
+
+def test_backfill_price_history_returns_none_when_circuit_open(db_session):
+    now = datetime.now(timezone.utc)
+    for _ in range(settings.circuit_breaker_failure_threshold):
+        db_session.add(ProviderCallLog(provider=ProviderName.alpha_vantage, status=CallStatus.failure, called_at=now))
+    db_session.commit()
+
+    assert provider_orchestrator.backfill_price_history(db_session, "AAPL") is None
+
+
+def test_backfill_price_history_returns_none_when_rate_limited(db_session):
+    now = datetime.now(timezone.utc)
+    for _ in range(settings.alpha_vantage_rate_limit_per_window):
+        db_session.add(ProviderCallLog(provider=ProviderName.alpha_vantage, status=CallStatus.success, called_at=now))
+    db_session.commit()
+
+    assert provider_orchestrator.backfill_price_history(db_session, "AAPL") is None
+
+
+@respx.mock
+def test_search_symbols_best_effort_returns_normalized_results(db_session):
+    respx.get("https://finnhub.io/api/v1/search").mock(
+        return_value=httpx.Response(
+            200, json={"result": [{"description": "Apple Inc", "symbol": "AAPL", "type": "Common Stock"}]}
+        )
+    )
+
+    results = provider_orchestrator.search_symbols_best_effort(db_session, "apple")
+
+    assert results == [{"symbol": "AAPL", "name": "Apple Inc", "type": "Common Stock"}]
+
+
+def test_search_symbols_best_effort_returns_empty_when_not_configured(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "finnhub_api_key", None)
+
+    assert provider_orchestrator.search_symbols_best_effort(db_session, "apple") == []
+
+
+@respx.mock
+def test_search_symbols_best_effort_returns_empty_on_failure_without_raising(db_session):
+    respx.get("https://finnhub.io/api/v1/search").mock(return_value=httpx.Response(503))
+
+    assert provider_orchestrator.search_symbols_best_effort(db_session, "apple") == []
+
+
+def test_search_symbols_best_effort_returns_empty_when_circuit_open(db_session):
+    now = datetime.now(timezone.utc)
+    for _ in range(settings.circuit_breaker_failure_threshold):
+        db_session.add(ProviderCallLog(provider=ProviderName.finnhub, status=CallStatus.failure, called_at=now))
+    db_session.commit()
+
+    assert provider_orchestrator.search_symbols_best_effort(db_session, "apple") == []

@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Dark-mode-first per plan.md's frontend design system. A dedicated visual design pass
+   comes later -- this is a clean, functional baseline meant to be easy to restyle, not a
+   final look. */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+}

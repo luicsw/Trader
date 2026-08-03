@@ -9,9 +9,13 @@ structured, testable spec and task breakdown (source of truth for *what's done*)
 [`documentations/spec.md`](documentations/spec.md); per-phase test reports live in
 [`documentations/tests/`](documentations/tests/README.md).
 
-**Current status:** Phase 0 through Phase 4 complete (backend skeleton, wiki assembly,
-watchlist + scheduler + reliability, AI verdict + second-opinion pipeline). Frontend not
-started. See [`documentations/spec.md`](documentations/spec.md) §9 for the full task breakdown.
+**Current status:** Phase 0 through Phase 5 functionally complete (backend skeleton, wiki
+assembly, watchlist + scheduler + reliability, AI verdict + second-opinion pipeline, and a
+working frontend core). Phase 5's UI has **not yet been visually/interactively verified in a
+real browser** (this session had no interactive Chrome available) — open it yourself before
+trusting it beyond "it compiles and the API calls resolve." A dedicated visual design pass is
+planned next, before Phase 6 (charts). See [`documentations/spec.md`](documentations/spec.md)
+§9 for the full task breakdown.
 
 ---
 
@@ -25,8 +29,10 @@ started. See [`documentations/spec.md`](documentations/spec.md) §9 for the full
   suggested hold period — reasoning over *exactly* the same data the wiki page shows, never
   data the user can't also see. Plus an on-demand adversarial "second opinion" critique pass,
   restricted to watchlist tickers as extra quota protection.
-- (Planned, Phase 5-7) A full fintech-style chart set (candlesticks, indicators, fundamentals,
-  news sentiment, peer comparison) in a mobile-first installable PWA.
+- A working frontend (dashboard, search, company wiki page) — functional but not yet visually
+  designed; a dedicated design pass is next. (Planned, Phase 6-7) A full fintech-style chart
+  set (candlesticks, indicators, fundamentals, news sentiment, peer comparison) and PWA
+  install/offline support.
 - Never silently fails: every provider outage, rate limit, or AI quota exhaustion is degraded
   gracefully and surfaced, never hidden.
 - Tracks its own verdicts against what price actually did 30 days later, and whether the AI's
@@ -80,21 +86,24 @@ flowchart TB
     WIKI --> DB
     AI --> DB
 
-    UI["React PWA<br/>(planned, Phase 5-7)"] -->|"HTTPS/JSON, reads only"| API["FastAPI routes<br/>/companies/*, /watchlist/*"]
+    UI["React frontend<br/>(Phase 5, via Vite dev proxy)"] -->|"HTTPS/JSON, reads only"| API["FastAPI routes<br/>/companies/*, /watchlist/*"]
     API --> WIKI
     API --> LOOKUP
     API --> AI
 
     style CRON1 stroke-dasharray: 5 5
     style CRON2 stroke-dasharray: 5 5
-    style UI stroke-dasharray: 5 5
 ```
 
 **The two-tier coverage model** is the key idea: *any* ticker can be looked up on demand (one
 fetch, cached until stale, never added to the watchlist), but only tickers you explicitly
 promote get a recurring background job. This is what keeps the app usable for exploring the
 whole market while staying safely inside free-tier rate limits for the handful of tickers you
-actually track.
+actually track. Promoting a ticker also triggers a one-time historical price backfill (Alpha
+Vantage, ~100 trading days in a single call) if it doesn't have enough history yet — so
+swing-level/moving-average technicals are usable immediately instead of taking weeks to
+accumulate one bar at a time. Deliberately not done on plain lookups, to protect Alpha
+Vantage's small fallback-only budget from being spent on casual browsing.
 
 **Reliability mechanics** (Phase 3): every external call goes through a fallback orchestrator
 (Finnhub → Alpha Vantage), a per-provider rate limiter and circuit breaker (both computed from
@@ -116,18 +125,23 @@ gets a clear "try again later" (`429`), never a silent failure or a generic `500
 The engineering above is designed to never silently fail or fabricate confidence — but that's
 a claim about the *plumbing*, not about whether you should act on any given verdict. Today's
 verdicts reason over a real price snapshot plus whatever news happened to be available, with
-no fundamentals ingested at all and technicals that need weeks of real accumulated history to
-mean anything. A low-confidence "hold" on thin data isn't the app being unhelpful — it's the
-honest answer. `GET /verdicts/track-record` exists specifically to make that trustworthiness
+no fundamentals ingested at all. Historical backfill (above) means most price-based technicals
+are usable immediately for watchlist tickers now — but the 200-day moving average still needs
+real elapsed time (Alpha Vantage's free tier only offers ~100 days of history), and there's
+still no earnings/revenue/margin data of any kind feeding the AI. A low-confidence "hold" on
+thin data isn't the app being unhelpful — it's the honest answer. `GET /verdicts/track-record` exists specifically to make that trustworthiness
 checkable over time instead of assumed: does the AI's stated confidence actually predict
 whether it's right. See [`documentations/spec.md`](documentations/spec.md) §12 for the fuller
 discussion and [`documentations/tests/outcome-tracking.md`](documentations/tests/outcome-tracking.md)
 for how it's tested.
 
-## What it will look like
+## What it looks like
 
-The frontend doesn't exist yet (Phase 5+), but the company wiki page — the core
-differentiator — is speced out in detail in `plan.md`. Planned layout, top to bottom:
+The frontend exists now (Phase 5) — dashboard, search, and the company wiki page all work
+functionally against the real backend — but it's using a plain, functional Tailwind baseline,
+not a final visual design. A dedicated design pass is next. The company wiki page — the core
+differentiator — is speced out in detail in `plan.md`; built so far, top to bottom (chart
+panel is Phase 6):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -150,15 +164,16 @@ differentiator — is speced out in detail in `plan.md`. Planned layout, top to 
 └─────────────────────────────────────────────────────────┘
 ```
 
-Mobile-first, installable as a PWA (bottom tab bar on phone, nav rail on desktop), dark-mode
-first, RSI/MACD panes collapse to an accordion on narrow screens. Full detail in
+Mobile-first responsive shell (nav rail on desktop, bottom tab bar on mobile) is in place;
+full PWA install/offline support is Phase 7. Full detail in
 [`documentations/plan.md`](documentations/plan.md) → "Frontend (React + Vite PWA)".
 
-Today, that same data is already reachable as JSON — `GET /companies/AAPL/wiki` returns the
-`overview`/`key_metrics`/`financials_summary`/`news_digest`/`risks_notes` sections, price data,
-and freshness timestamps that page will eventually render, and `POST
-/companies/AAPL/analyze` already returns exactly the verdict/confidence/price-targets/
-hold-period/cited-sources shape the AI verdict banner will show.
+`frontend/` is a Vite + React + TypeScript + Tailwind v4 app, talking to the backend through
+Vite's dev proxy (no CORS setup needed locally). React Query owns all server state, with one
+query key per resource so a slow section never blocks a fast one (FR-23). See
+[`documentations/spec.md`](documentations/spec.md)'s Phase 5 section for exactly what was
+verified (typecheck + lint + real data through the proxy) versus what still needs your own
+eyes in a browser (actual rendering, routing, interactivity).
 
 ## Main commands
 
@@ -176,7 +191,8 @@ pip install -r requirements.txt -r requirements-dev.txt
 # Copy and fill in secrets (never commit .env)
 cp .env.example .env
 # FINNHUB_API_KEY=...        (required)
-# ALPHA_VANTAGE_API_KEY=...  (optional -- fallback provider + news sentiment, get a free key
+# ALPHA_VANTAGE_API_KEY=...  (optional -- fallback provider, news sentiment, and one-time
+#                             historical price backfill on watchlist promote; get a free key
 #                             at alphavantage.co/support/#api-key)
 # GEMINI_API_KEY=...         (required for the AI verdict/critique pipeline)
 # DATABASE_URL=...           (defaults to the WSL-native Postgres on port 5433)
@@ -212,6 +228,16 @@ Alternative Postgres via Docker (untested on this machine, see note above):
 docker compose up -d
 ```
 
+Frontend (run alongside the backend above — the Vite dev proxy forwards `/api/*` to it):
+
+```bash
+cd frontend
+npm install
+npm run dev              # serves http://localhost:5173
+npx tsc -b --noEmit       # type-check
+npx oxlint                # lint
+```
+
 ## Project layout
 
 ```
@@ -228,6 +254,11 @@ app/
 tests/
   unit/                      — no network, no DB (respx-mocked HTTP, pure-function logic)
   integration/               — real Postgres, transaction-rolled-back per test
+frontend/                    — Vite + React + TypeScript + Tailwind v4 (Phase 5)
+  src/api/                    — fetch client, TS types, React Query hooks (one key per resource)
+  src/auth/                   — shared-credential auth gate (client-side only for now)
+  src/components/              — Layout, FreshnessIndicator, VerdictBadge, VerdictBanner, Skeleton
+  src/routes/                  — LoginPage, DashboardPage, SearchPage, CompanyPage
 prompts/                     — Gemini prompt templates (versioned by filename, never edited in place)
 scripts/                     — standalone Gemini prompt test harness (Phase 0 derisking)
 documentations/

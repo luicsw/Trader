@@ -72,6 +72,44 @@ class AlphaVantageClient(DataProvider):
             )
         return articles
 
+    def get_daily_history(self, ticker: str) -> list[dict]:
+        """One-time historical backfill so swing-level/moving-average technicals are usable
+        immediately instead of taking weeks to accumulate one bar at a time. NOT part of the
+        DataProvider interface -- Finnhub doesn't offer historical daily bars on its free
+        tier, so this has no fallback partner and is only ever called directly on this client.
+
+        outputsize=full (full multi-year history) is premium-gated on the free tier as of
+        2026-08-03 (confirmed live: returns a clean "Information" upsell message, which the
+        existing Note/Information check in `_get` already raises as TransientProviderError).
+        `compact` (~100 most recent trading days) is what's actually available -- enough for
+        every technical this app computes except the 200-day moving average, which still
+        needs real elapsed time to accumulate.
+
+        Returned oldest-first (chronological), matching accumulation order elsewhere.
+        """
+        data = self._get(
+            {"function": "TIME_SERIES_DAILY", "symbol": ticker, "outputsize": "compact"}, ticker
+        )
+        series = data.get("Time Series (Daily)") or {}
+        if not series:
+            raise PermanentProviderError(f"Alpha Vantage returned no daily history for {ticker!r}")
+
+        bars = []
+        for date_str, values in series.items():
+            ts = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            bars.append(
+                {
+                    "ts": ts,
+                    "open": _to_float(values.get("1. open")),
+                    "high": _to_float(values.get("2. high")),
+                    "low": _to_float(values.get("3. low")),
+                    "close": _to_float(values.get("4. close")),
+                    "volume": _to_int(values.get("5. volume")),
+                }
+            )
+        bars.sort(key=lambda bar: bar["ts"])
+        return bars
+
     def _get(self, params: dict, ticker: str) -> dict:
         try:
             response = self._client.get(BASE_URL, params={**params, "apikey": self._api_key})
@@ -107,6 +145,15 @@ def _to_float(value) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 

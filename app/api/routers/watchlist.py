@@ -8,6 +8,11 @@ from app.services import watchlist_service
 router = APIRouter(tags=["watchlist"])
 
 
+@router.get("/watchlist")
+def list_watchlist(db: Session = Depends(get_db)):
+    return watchlist_service.list_watchlist(db)
+
+
 @router.post("/watchlist/{ticker}/promote")
 def promote(ticker: str, db: Session = Depends(get_db)):
     try:

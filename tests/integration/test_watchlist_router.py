@@ -67,3 +67,24 @@ def test_remove_unknown_ticker_is_a_safe_no_op(client):
 
     assert response.status_code == 200
     assert response.json() == {"ticker": "NOPE", "removed": True}
+
+
+def test_list_watchlist_empty(client):
+    response = client.get("/watchlist")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@respx.mock
+def test_list_watchlist_reflects_promoted_ticker(client):
+    _mock_finnhub_success(name="Listed Co")
+    client.post("/watchlist/wtc/promote")
+
+    response = client.get("/watchlist")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["ticker"] == "WTC"
+    assert body[0]["name"] == "Listed Co"

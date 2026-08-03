@@ -1,6 +1,7 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
-**Status:** Phase 0 through Phase 4 complete, Phase 5 not started · **Last updated:** 2026-08-03
+**Status:** Phase 0 through Phase 5 functionally complete, Phase 6 not started · **Last updated:** 2026-08-03
+(Phase 5's UI has not been visually/interactively verified in a real browser — see its section below.)
 
 **Relationship to `plan.md`:** `plan.md` is the narrative design doc — architecture rationale,
 rejected alternatives, tradeoffs. This file is the structured, testable specification and task
@@ -183,11 +184,13 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 |---|---|---|---|
 | `GET /health` | Liveness probe | none | For Render health checks |
 | `GET /status` | Recent `job_runs` + provider health summary | shared credential | Post-deploy verification target |
-| `GET /companies/search?q=` | Ticker/name search | shared credential | Backs `/search` route |
+| `GET /companies/search?q=` | Ticker/name search — proxies Finnhub's `/search` (Phase 5, built alongside the frontend that needed it) | shared credential | Backs `/search` route; Finnhub-only, no Alpha Vantage fallback (not worth the fallback-only budget for a discovery feature) |
 | `GET /companies/{ticker}/wiki` | Full assembled wiki page (FR-8, FR-9) | shared credential | `last_updated` on every field group |
+| `GET /watchlist` *(Phase 5)* | Summary list of active watchlist companies (ticker/name/latest price/latest verdict) | shared credential | Backs the dashboard grid; deliberately thin, not a full wiki assembly per ticker |
 | `POST /watchlist/{ticker}/promote` | Add to watchlist + trigger initial refresh/analysis (FR-11) | shared credential | Idempotent |
 | `DELETE /watchlist/{ticker}` | Remove from watchlist (FR-12) | shared credential | Does not delete history |
 | `POST /companies/{ticker}/analyze` | On-demand AI verdict (FR-14) | shared credential | 429-style clear response on quota exhaustion (FR-16) |
+| `GET /companies/{ticker}/analyses` *(Phase 5)* | Full verdict history with nested critiques | shared credential | Backs the verdict banner (latest) + "AI Analysis History" section (FR-22); no separate "latest analysis" endpoint |
 | `POST /companies/{ticker}/critique?analysis_id=` | On-demand second opinion (FR-18) | shared credential | Lowest budget priority (FR-20) |
 | `POST /internal/refresh` | Cron-triggered refresh for all active watchlist tickers | shared credential | Idempotent, safe no-op if too soon |
 | `POST /internal/analyze-scheduled` | Cron-triggered daily scheduled analyses | shared credential | Budget-priority applies (FR-17) |
@@ -412,14 +415,90 @@ closes part of that gap by making calibration checkable instead of assumed.
   anything about calibration. Built now because it's small and self-contained, not because
   it's urgent.
 
-### Phase 5 — Frontend core
-- [ ] T5.1 Vite + React + TypeScript scaffold, Tailwind, React Router, React Query provider
-- [ ] T5.2 `/login` auth gate (shared bearer credential, stored client-side)
-- [ ] T5.3 Dashboard route — static sections first, no charts (FR-21)
-- [ ] T5.4 Company wiki page route — static sections first, AI verdict banner incl. "Get Second Opinion" button (FR-22)
-- [ ] T5.5 `/search` route
-- [ ] T5.6 Per-section independent query keys + skeletons (FR-23), `FreshnessIndicator` (FR-24)
+### Post-Phase-4 Addition — Historical Price Backfill ✅ DONE
+Not part of the original phase numbering — user-proposed after getting a real Alpha Vantage
+key, to fix the *other* half of the "verdicts are thin" problem: swing-level/moving-average
+technicals were `null` until real time accumulated one bar per day. A one-time historical
+backfill on watchlist promote closes most of that gap immediately.
+
+- [x] **Verified live before building** (per the project's established derisking habit):
+  `TIME_SERIES_DAILY` with `outputsize=full` (full multi-year history) is **premium-gated on
+  the free tier** — confirmed via a real call returning a clean upsell message, not data. Only
+  `outputsize=compact` (~100 most recent trading days) is free. This changed the plan: covers
+  20d/60d swing levels, 1d/1m/3m price change, and the 50-day moving average immediately; the
+  200-day moving average still needs real elapsed time (~8-9 months), same as before, just
+  starting from a much stronger base.
+- [x] `AlphaVantageClient.get_daily_history(ticker)` — not part of the `DataProvider` ABC
+  (Finnhub has no free-tier historical-candles endpoint, so this has no fallback partner and
+  is only ever called directly on the Alpha Vantage client).
+- [x] `ingest_service.bulk_upsert_bars()` — one multi-row `ON CONFLICT` statement for the
+  whole batch, each conflicting row updating via `EXCLUDED` rather than a shared literal.
+- [x] `provider_orchestrator.backfill_price_history()` — same rate-limiter/circuit-breaker
+  checks as every other Alpha Vantage call (no bypass for this one case), best-effort like
+  `fetch_news_best_effort` (never raises; backfill is enrichment, not a hard requirement for
+  promote to succeed).
+- [x] Wired into `watchlist_service.promote()` only, **not** `lookup_service.get_or_fetch()` —
+  deliberate scope decision: Alpha Vantage's daily budget is small and reserved as an
+  emergency fallback (plan.md), never a load-shared partner; backfilling on every casual
+  lookup would risk draining that budget on low-stakes browsing instead of the deliberate,
+  low-frequency act of promoting a ticker.
+- [x] Idempotent: skipped if the company already has ≥`backfill_min_bars_threshold` (50) bars,
+  so re-promoting a previously-tracked ticker doesn't spend budget for nothing.
+- **Verify:** unit tests for parsing/normalization, integration tests for the bulk upsert,
+  the orchestration function (rate-limited, circuit-broken, never raises), and `promote()`
+  wiring (backfills new tickers, skips already-sufficient ones); live verification with a
+  real ticker.
+- **Verified live:** promoted AMD (previously untracked) with a real Alpha Vantage key —
+  `backfilled: true`, 101 real historical bars landed (2026-03-10 to 2026-08-03, matching
+  compact's ~100-day window exactly), and `price_summary`/`recent_swing_levels` came back with
+  real numbers (`change_1m_pct: -8.15`, `vs_50d_ma_pct: -7.24`, real 20d/60d ranges) instead of
+  the all-`null` result the NVDA verification showed back in Phase 4 — direct, visible proof
+  the feature does what it was built for. Also reconfirmed, on a second real ticker, that
+  Finnhub's free tier rejects `/company-news` — the fallback to Alpha Vantage's
+  `NEWS_SENTIMENT` kicked in correctly and returned real sentiment-classified articles.
+  146/146 tests pass (14 new), stable across repeated runs; no test-isolation regressions
+  from this round of live testing (the Phase 3 `provider_call_log`-clearing fixture held up
+  under a new real-data write).
+
+### Phase 5 — Frontend core ✅ DONE (functionally verified; visual/interactive check still needed from you)
+- [x] T5.1 Vite + React + TypeScript scaffold, Tailwind, React Router, React Query provider
+- [x] T5.2 `/login` auth gate (shared bearer credential, stored client-side)
+- [x] T5.3 Dashboard route — static sections first, no charts (FR-21)
+- [x] T5.4 Company wiki page route — static sections first, AI verdict banner incl. "Get Second Opinion" button (FR-22)
+- [x] T5.5 `/search` route
+- [x] T5.6 Per-section independent query keys + skeletons (FR-23), `FreshnessIndicator` (FR-24)
 - **Verify:** exercise all routes against the running local backend.
+- **Verified:** TypeScript compiles clean (`tsc -b --noEmit`), `oxlint` passes (0 errors, 2
+  harmless fast-refresh style warnings), both dev servers run, and every API path the
+  frontend calls was confirmed reaching the real backend with real data through Vite's dev
+  proxy (`/api/watchlist`, `/api/companies/AAPL/wiki`, `/api/companies/search?q=`,
+  `/api/companies/AAPL/analyses`).
+- **Not verified — genuinely could not be, be honest about this:** actual rendered
+  appearance, client-side routing/auth-redirect behavior, interactive elements (buttons,
+  forms), responsive layout. This session has no interactive Chrome attached
+  (`claude-in-chrome` unavailable in this background job), so HTTP-level/proxy checks are the
+  ceiling of what could be confirmed here — they prove the data plumbing works, not that the
+  UI renders or behaves correctly. **Open `http://localhost:5173` yourself before trusting
+  this beyond "the code compiles and the API calls resolve."**
+- **Backend prerequisites discovered missing while starting this phase** (built first, see
+  §7's now-current API contract): `GET /watchlist` (dashboard needed a way to list tracked
+  tickers — didn't exist), `GET /companies/search` (speced in this file's API contract table
+  since the beginning but never implemented in any prior phase), `GET
+  /companies/{ticker}/analyses` (the verdict banner and "AI Analysis History" section both
+  need the analysis history, and no endpoint returned it — `POST /analyze` only ever returned
+  the single new verdict it had just created).
+- **Scope note on FR-23:** "each section fetches independently" is interpreted at the
+  granularity the backend actually offers — wiki data (overview/key_metrics/financials/risks)
+  is assembled server-side in one call and is one query key; AI analysis history is a
+  separate endpoint and a separate query key. A slow AI-history fetch never blocks the wiki
+  sections from rendering, and vice versa, which is the actual intent of FR-23 — there's no
+  per-wiki-section backend endpoint to fetch even more granularly than that.
+- **Known environment friction:** Vite's dependency pre-bundling step logged one `EACCES`
+  permission error on a rename inside `node_modules/.vite/deps` on first run, then recovered
+  and served correctly — almost certainly OneDrive's file-sync locking interfering with a
+  Windows/WSL-crossing path, the same category of issue as Phase 1's Docker/Podman
+  networking note. Not blocking, but worth knowing about if the dev server ever seems stuck
+  on first start.
 
 ### Phase 6 — Charts
 - [ ] T6.1 `lightweight-charts` price panel: candlestick+volume, SMA/EMA/Bollinger overlays, RSI/MACD sub-panes, benchmark-compare toggle, verdict markers
@@ -541,15 +620,17 @@ app/
     wiki_sections_service.py         — template-based section generation, real news_digest +
                                         technicals in key_metrics (Phase 2, extended Phase 4)
     ingest_service.py                — shared profile+quote+news upsert logic, recent_bars()/
-                                        recent_news() readers (Phase 3, extended Phase 4)
+                                        recent_news() readers (Phase 3, extended Phase 4),
+                                        bar_count()/bulk_upsert_bars() for backfill (post-Phase-4)
     provider_orchestrator.py         — fetch_with_fallback(), fetch_news_best_effort() (Phase 3, T3.3;
-                                        news added Phase 4)
+                                        news added Phase 4), backfill_price_history() (post-Phase-4)
     rate_limiter.py                 — per-provider sliding window over provider_call_log, with a
                                         budget_fraction param for priority tiers (Phase 3, T3.4;
                                         extended Phase 4 for Gemini budget priority)
     circuit_breaker.py               — per-provider circuit state over provider_call_log (Phase 3, T3.5)
     refresh_service.py               — refresh_watchlist()/refresh_entry() (Phase 3, T3.2)
-    watchlist_service.py             — promote()/remove() (Phase 3, T3.1)
+    watchlist_service.py             — promote()/remove(), one-time historical backfill on
+                                        promote (Phase 3, T3.1; backfill added post-Phase-4)
     technicals_service.py            — compute_swing_levels()/compute_price_summary() from
                                         price_bars history, no new provider calls (Phase 4)
     ai_service.py                    — build_prompt()/build_critique_prompt(), generate_verdict(),
@@ -565,7 +646,9 @@ app/
                                         /company-news (Phase 1, updated Phase 3 and Phase 4)
     alpha_vantage_client.py          — fallback provider, normalized output, get_news() via
                                         NEWS_SENTIMENT with real sentiment labels (Phase 3, T3.3;
-                                        news added Phase 4)
+                                        news added Phase 4), get_daily_history() for one-time
+                                        backfill -- outputsize=compact only, full is
+                                        premium-gated (post-Phase-4)
     gemini_client.py                 — wraps google-genai, schema-forced JSON, Transient/
                                         PermanentProviderError mapping (Phase 4, T4.1)
 tests/
@@ -577,9 +660,26 @@ tests/
                                         assertions from manual live testing), and provides a
                                         `client` fixture (TestClient wired to the same rolled-back
                                         session) for HTTP-level router tests
+frontend/                            — Vite + React + TypeScript + Tailwind v4 (Phase 5)
+  vite.config.ts                     — dev proxy: /api/* -> http://127.0.0.1:8000 (avoids
+                                        needing CORS for local dev; Phase 8 deploy will need
+                                        real CORS config once frontend/backend are separate domains)
+  src/
+    App.tsx                          — QueryClientProvider + AuthProvider + router wiring
+    api/
+      client.ts                      — fetch wrapper, attaches the stored bearer credential,
+                                        typed ApiError
+      types.ts                       — hand-written TS types mirroring backend response shapes
+      hooks.ts                       — React Query hooks, one query key per resource (FR-23)
+    auth/AuthContext.tsx             — shared credential in localStorage, ProtectedRoute (T5.2)
+    components/
+      Layout.tsx                     — nav rail (desktop) / bottom tabs (mobile)
+      FreshnessIndicator.tsx         — FR-24
+      VerdictBadge.tsx, VerdictBanner.tsx, Skeleton.tsx
+    routes/
+      LoginPage.tsx, DashboardPage.tsx, SearchPage.tsx, CompanyPage.tsx
 ```
 
-The frontend does not exist yet — Phase 5 creates it. A `fundamentals` table still does not
-exist — Phase 4 deliberately did not add one (see this phase's scope-decision note above); the
-prompt's `financials_summary_last_4_periods` stays an honest empty array until a future phase
-adds real fundamentals ingestion.
+A `fundamentals` table still does not exist — Phase 4 deliberately did not add one (see that
+phase's scope-decision note above); the prompt's `financials_summary_last_4_periods` stays an
+honest empty array until a future phase adds real fundamentals ingestion.

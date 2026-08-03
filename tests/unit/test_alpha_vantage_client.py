@@ -167,3 +167,71 @@ def test_get_news_rate_limit_note_raises_transient_error():
 
     with pytest.raises(TransientProviderError):
         client.get_news("IBM")
+
+
+@respx.mock
+def test_get_daily_history_returns_normalized_bars_oldest_first():
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Meta Data": {"2. Symbol": "IBM"},
+                "Time Series (Daily)": {
+                    "2026-08-03": {
+                        "1. open": "221.15",
+                        "2. high": "224.76",
+                        "3. low": "216.585",
+                        "4. close": "223.65",
+                        "5. volume": "9093613",
+                    },
+                    "2026-08-01": {
+                        "1. open": "222.00",
+                        "2. high": "224.86",
+                        "3. low": "220.20",
+                        "4. close": "221.74",
+                        "5. volume": "9675157",
+                    },
+                },
+            },
+        )
+    )
+    client = AlphaVantageClient(api_key="test-key")
+
+    bars = client.get_daily_history("IBM")
+
+    assert len(bars) == 2
+    assert bars[0]["ts"] < bars[1]["ts"]  # oldest first
+    assert bars[-1]["close"] == 223.65
+    assert bars[-1]["volume"] == 9093613
+
+
+@respx.mock
+def test_get_daily_history_empty_series_raises_permanent_error():
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(200, json={"Time Series (Daily)": {}})
+    )
+    client = AlphaVantageClient(api_key="test-key")
+
+    with pytest.raises(PermanentProviderError):
+        client.get_daily_history("BADTICKER")
+
+
+@respx.mock
+def test_get_daily_history_outputsize_full_premium_message_raises_transient_error():
+    # Real free-tier response confirmed live: outputsize=full is premium-gated and returns a
+    # 200 with an "Information" upsell message instead of data.
+    respx.get("https://www.alphavantage.co/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Information": (
+                    "Thank you for using Alpha Vantage! The outputsize=full parameter value "
+                    "is a premium feature for the TIME_SERIES_DAILY endpoint."
+                )
+            },
+        )
+    )
+    client = AlphaVantageClient(api_key="test-key")
+
+    with pytest.raises(TransientProviderError):
+        client.get_daily_history("IBM")

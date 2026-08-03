@@ -38,6 +38,34 @@ def _serialize_critique(critique: AiCritique) -> dict:
     }
 
 
+@router.get("/companies/{ticker}/analyses")
+def list_analyses(ticker: str, db: Session = Depends(get_db)):
+    """Full verdict history for the wiki page's "AI Analysis History" section (FR-22) --
+    also doubles as where the frontend gets the latest verdict's id to call critique against,
+    so there's no separate "latest analysis" endpoint to keep in sync with this one.
+    """
+    ticker = ticker.upper()
+    company = db.scalar(select(Company).where(Company.ticker == ticker))
+    if company is None:
+        return []
+
+    analyses = db.scalars(
+        select(AiAnalysis)
+        .where(AiAnalysis.company_id == company.id)
+        .order_by(AiAnalysis.generated_at.desc())
+    ).all()
+    return [
+        {
+            **_serialize_analysis(analysis),
+            "critiques": [
+                _serialize_critique(critique)
+                for critique in sorted(analysis.critiques, key=lambda c: c.generated_at, reverse=True)
+            ],
+        }
+        for analysis in analyses
+    ]
+
+
 @router.post("/companies/{ticker}/analyze")
 def analyze(ticker: str, db: Session = Depends(get_db)):
     try:

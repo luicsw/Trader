@@ -80,6 +80,67 @@ def fetch_news_best_effort(db, ticker: str) -> list[dict]:
     return []
 
 
+def backfill_price_history(db, ticker: str) -> list[dict] | None:
+    """One-time historical backfill via Alpha Vantage's TIME_SERIES_DAILY (compact, ~100
+    trading days -- outputsize=full is premium-gated, confirmed live). Has no fallback
+    partner: Finnhub doesn't offer historical daily bars on its free tier, so this only ever
+    calls Alpha Vantage directly rather than iterating `_configured_providers()`.
+
+    Best-effort like fetch_news_best_effort: backfill is enrichment, never a hard requirement
+    for watchlist promote() to succeed, so this never raises. Returns None if Alpha Vantage
+    isn't configured, is unavailable (circuit open/rate limited), or the fetch fails; returns
+    [] only if Alpha Vantage genuinely has no history for the ticker.
+    """
+    if not settings.alpha_vantage_api_key:
+        return None
+
+    name = ProviderName.alpha_vantage
+    if not circuit_breaker.is_available(db, name):
+        return None
+    if not rate_limiter.allow(db, name):
+        return None
+
+    client = AlphaVantageClient(settings.alpha_vantage_api_key)
+    try:
+        bars = client.get_daily_history(ticker)
+    except Exception:
+        rate_limiter.record_call(db, name, CallStatus.failure)
+        db.commit()
+        return None
+
+    rate_limiter.record_call(db, name, CallStatus.success)
+    db.commit()
+    return bars
+
+
+def search_symbols_best_effort(db, query: str) -> list[dict]:
+    """Ticker/name search (spec.md FR-8/§7) -- Finnhub only, no Alpha Vantage fallback (its
+    equivalent SYMBOL_SEARCH isn't worth spending the scarce fallback-only daily budget on a
+    nice-to-have discovery feature). Best-effort like fetch_news_best_effort/
+    backfill_price_history: never raises, returns [] if unconfigured/unavailable/empty.
+    """
+    if not settings.finnhub_api_key:
+        return []
+
+    name = ProviderName.finnhub
+    if not circuit_breaker.is_available(db, name):
+        return []
+    if not rate_limiter.allow(db, name):
+        return []
+
+    client = FinnhubClient(settings.finnhub_api_key)
+    try:
+        results = client.search_symbols(query)
+    except Exception:
+        rate_limiter.record_call(db, name, CallStatus.failure)
+        db.commit()
+        return []
+
+    rate_limiter.record_call(db, name, CallStatus.success)
+    db.commit()
+    return results
+
+
 def _configured_providers() -> list[tuple[ProviderName, DataProvider]]:
     providers: list[tuple[ProviderName, DataProvider]] = []
     if settings.finnhub_api_key:

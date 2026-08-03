@@ -143,3 +143,32 @@ def test_get_news_empty_list_is_not_an_error():
     client = FinnhubClient(api_key="test-key")
 
     assert client.get_news("AAPL") == []
+
+
+@respx.mock
+def test_search_symbols_returns_normalized_results():
+    respx.get("https://finnhub.io/api/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "count": 2,
+                "result": [
+                    {"description": "Apple Inc", "displaySymbol": "AAPL", "symbol": "AAPL", "type": "Common Stock"},
+                    {"description": "", "displaySymbol": "", "symbol": "", "type": "Common Stock"},
+                ],
+            },
+        )
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    results = client.search_symbols("apple")
+
+    assert results == [{"symbol": "AAPL", "name": "Apple Inc", "type": "Common Stock"}]
+
+
+@respx.mock
+def test_search_symbols_no_matches_is_not_an_error():
+    respx.get("https://finnhub.io/api/v1/search").mock(return_value=httpx.Response(200, json={"count": 0, "result": []}))
+    client = FinnhubClient(api_key="test-key")
+
+    assert client.search_symbols("zzzznomatch") == []

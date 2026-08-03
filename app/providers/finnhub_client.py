@@ -77,6 +77,25 @@ class FinnhubClient(DataProvider):
             )
         return articles
 
+    def search_symbols(self, query: str) -> list[dict]:
+        """Ticker/name search (spec.md FR-8/§7, "every company in the market should be
+        viewable on demand") -- confirmed live on the free tier. An empty result list is a
+        normal outcome (no matches), not an error.
+        """
+        data = self._get("/search", query, {"q": query})
+        results = data.get("result") if isinstance(data, dict) else None
+        if not results:
+            return []
+        return [
+            {
+                "symbol": item.get("symbol"),
+                "name": item.get("description"),
+                "type": item.get("type"),
+            }
+            for item in results
+            if item.get("symbol")
+        ]
+
     def _get(self, path: str, ticker: str, params: dict) -> dict | list:
         try:
             response = self._client.get(path, params={**params, "token": self._api_key})
