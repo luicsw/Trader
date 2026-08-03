@@ -283,3 +283,40 @@ def test_search_symbols_best_effort_returns_empty_when_circuit_open(db_session):
     db_session.commit()
 
     assert provider_orchestrator.search_symbols_best_effort(db_session, "apple") == []
+
+
+@respx.mock
+def test_fetch_quote_best_effort_returns_quote_and_logs_success(db_session):
+    respx.get("https://finnhub.io/api/v1/quote").mock(
+        return_value=httpx.Response(200, json={"c": 42.5, "o": 41, "h": 43, "l": 40, "pc": 41.5})
+    )
+
+    quote = provider_orchestrator.fetch_quote_best_effort(db_session, "AAPL")
+
+    assert quote["close"] == 42.5
+    log = db_session.query(ProviderCallLog).filter_by(provider=ProviderName.finnhub).one()
+    assert log.status == CallStatus.success
+
+
+def test_fetch_quote_best_effort_returns_none_when_not_configured(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "finnhub_api_key", None)
+
+    assert provider_orchestrator.fetch_quote_best_effort(db_session, "AAPL") is None
+
+
+@respx.mock
+def test_fetch_quote_best_effort_returns_none_on_failure_without_raising(db_session):
+    respx.get("https://finnhub.io/api/v1/quote").mock(return_value=httpx.Response(503))
+
+    assert provider_orchestrator.fetch_quote_best_effort(db_session, "AAPL") is None
+    log = db_session.query(ProviderCallLog).filter_by(provider=ProviderName.finnhub).one()
+    assert log.status == CallStatus.failure
+
+
+def test_fetch_quote_best_effort_returns_none_when_circuit_open(db_session):
+    now = datetime.now(timezone.utc)
+    for _ in range(settings.circuit_breaker_failure_threshold):
+        db_session.add(ProviderCallLog(provider=ProviderName.finnhub, status=CallStatus.failure, called_at=now))
+    db_session.commit()
+
+    assert provider_orchestrator.fetch_quote_best_effort(db_session, "AAPL") is None

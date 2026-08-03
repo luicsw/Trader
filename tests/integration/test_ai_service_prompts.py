@@ -29,7 +29,7 @@ def test_build_prompt_leaves_no_unfilled_placeholders(db_session):
     assert "{{" not in result["prompt_text"]
     assert "ZAIP" in result["prompt_text"]
     assert "Apple overview." in result["prompt_text"]
-    assert result["context_snapshot"]["prompt_version"] == "verdict_prompt_v1"
+    assert result["context_snapshot"]["prompt_version"] == "verdict_prompt_v2"
     assert result["response_schema"] == ai_service.RESPONSE_SCHEMA
 
 

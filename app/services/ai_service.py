@@ -40,9 +40,9 @@ class QuotaExhaustedError(Exception):
     """
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-PROMPT_PATH = REPO_ROOT / "prompts" / "verdict_prompt_v1.md"
+PROMPT_PATH = REPO_ROOT / "prompts" / "verdict_prompt_v2.md"
 CRITIQUE_PROMPT_PATH = REPO_ROOT / "prompts" / "verdict_critique_prompt_v1.md"
-PROMPT_VERSION = "verdict_prompt_v1"
+PROMPT_VERSION = "verdict_prompt_v2"
 CRITIQUE_PROMPT_VERSION = "verdict_critique_prompt_v1"
 
 RESPONSE_SCHEMA = {
@@ -125,6 +125,21 @@ def _extract_template_block(prompt_md: str) -> str:
     return prompt_md[fence_start:fence_end].strip()
 
 
+def _format_position_text(holding: dict | None, ticker: str) -> str:
+    if holding is None:
+        return f"No position -- the user does not currently hold any shares of {ticker}."
+
+    gain_pct = holding.get("unrealized_gain_pct")
+    gain_str = f"{gain_pct:+.1f}%" if gain_pct is not None else "unknown (no current price available)"
+    acquired = f", acquired {holding['acquired_at']}" if holding.get("acquired_at") else ""
+    notes = f" User notes: {holding['notes']}" if holding.get("notes") else ""
+    return (
+        f"The user holds {holding['shares']} shares at a cost basis of "
+        f"${holding['cost_basis_per_share']:.2f}/share{acquired}. "
+        f"Unrealized gain/loss: {gain_str}.{notes}"
+    )
+
+
 def wiki_to_prompt_data(wiki: dict) -> dict:
     """Maps wiki_service.assemble()'s dict into the prompt template's placeholder shape.
     `key_metrics`/`financials_summary_last_4_periods` are honestly thin against what
@@ -139,6 +154,7 @@ def wiki_to_prompt_data(wiki: dict) -> dict:
         "sector": wiki.get("sector") or "Unknown",
         "exchange": wiki.get("exchange") or "Unknown",
         "as_of_timestamp": wiki.get("last_updated") or datetime.now(timezone.utc).isoformat(),
+        "position_text": _format_position_text(wiki.get("holding"), wiki["ticker"]),
         "overview_text": sections.get("overview", {}).get("body", ""),
         "key_metrics": {
             "market_cap_usd": wiki.get("market_cap"),
@@ -159,6 +175,7 @@ def _fill_template(template: str, data: dict) -> str:
     filled = filled.replace("{{SECTOR}}", data["sector"])
     filled = filled.replace("{{EXCHANGE}}", data["exchange"])
     filled = filled.replace("{{AS_OF_TIMESTAMP}}", data["as_of_timestamp"])
+    filled = filled.replace("{{POSITION_TEXT}}", data["position_text"])
     filled = filled.replace("{{OVERVIEW_TEXT}}", data["overview_text"])
     filled = filled.replace("{{KEY_METRICS_JSON}}", json.dumps(data["key_metrics"], indent=2))
     filled = filled.replace("{{PRICE_SUMMARY}}", json.dumps(data["price_summary"], indent=2))

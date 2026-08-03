@@ -175,6 +175,9 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `provider_call_log` | provider, status, called_at | Backs rate limiter + circuit breaker; audit trail |
 | `job_runs` | job_name, status, error_message, attempt | Never-silent-failure observability |
 | `verdict_outcomes` *(post-Phase-4 addition)* | analysis_id (FK → ai_analyses), horizon_days, price_at_verdict, price_at_horizon, price_change_pct, directionally_correct, evaluated_at | Append-only; UNIQUE `(analysis_id)` (single fixed horizon) — checks verdict/confidence calibration against actual price, see §9 "Post-Phase-4 Addition" |
+| `holdings` *(post-Phase-5 addition)* | company_id, shares, cost_basis_per_share, acquired_at, notes, created_at, updated_at | UNIQUE `(company_id)` — one row per company, not tax lots (explicit scope decision) |
+| `chat_messages` *(post-Phase-5 addition)* | role (user\|assistant), content, created_at | Append-only, linear, single-user — no multi-conversation concept |
+| `price_bars` interval `"5m"` *(post-Phase-5 addition)* | same columns as the `"1d"` rows above, one bucket per 5 minutes | Aggregated server-side from repeated `/quote` polls (Finnhub's free tier has no intraday candle endpoint) — not a new table, just a new `interval` value in the existing `price_bars` table |
 
 ---
 
@@ -197,6 +200,13 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `GET /compare?tickers=A,B,C` | Normalized overlay + peer fundamentals data for 2-5 tickers | shared credential | Backs `/compare` route |
 | `POST /internal/evaluate-outcomes` *(post-Phase-4)* | Cron-triggered evaluation of verdicts past the 30-day horizon | shared credential | Never fails on missing price data, just retries next cycle |
 | `GET /verdicts/track-record` *(post-Phase-4)* | Aggregate accuracy/return by verdict type and by confidence bucket | shared credential | See §9 "Post-Phase-4 Addition" — the calibration check |
+| `GET /holdings` *(post-Phase-5)* | List tracked positions with computed gain/loss | shared credential | Backs `/portfolio` |
+| `POST /holdings/{ticker}` *(post-Phase-5)* | Upsert a position (shares, cost_basis_per_share, acquired_at, notes) | shared credential | Auto-promotes to watchlist the first time only |
+| `DELETE /holdings/{ticker}` *(post-Phase-5)* | Remove a tracked position | shared credential | Idempotent; leaves the watchlist entry untouched |
+| `GET /companies/{ticker}/price-history?interval=&limit=` *(post-Phase-5)* | Historical bars for chart context | shared credential | Read-only, no provider calls |
+| `POST /companies/{ticker}/live-quote` *(post-Phase-5)* | One near-live price poll, aggregated into a `"5m"` bar | shared credential | Called by the frontend only while a company page is open, ~every 20s |
+| `GET /chat/messages` *(post-Phase-5)* | Full chat history | shared credential | Backs `/chat` |
+| `POST /chat` *(post-Phase-5)* | Send a chat message, get a grounded AI reply | shared credential | Grounded to tracked companies only (user decision); lowest Gemini budget priority |
 
 ---
 
@@ -207,8 +217,10 @@ standalone in Phase 0 before any backend code was written (see §9).
 
 | File | Purpose | Input | Output schema |
 |---|---|---|---|
-| `prompts/verdict_prompt_v1.md` | First-pass buy/hold/sell verdict | `wiki_service.assemble(ticker)` dict | `{verdict, confidence, reasoning, price_targets{buy_at_or_below, sell_at_or_above, stop_loss}, hold_period_days{min, max, note}, cited_sources[]}` |
+| `prompts/verdict_prompt_v1.md` | First-pass buy/hold/sell verdict (superseded by v2 as the live default — kept for reproducibility of old `ai_analyses` rows) | `wiki_service.assemble(ticker)` dict | `{verdict, confidence, reasoning, price_targets{buy_at_or_below, sell_at_or_above, stop_loss}, hold_period_days{min, max, note}, cited_sources[]}` |
+| `prompts/verdict_prompt_v2.md` *(post-Phase-5, current default)* | Same as v1 plus a "Your Position" section (holdings-aware, honest "no position" when none exists) | same wiki dict, now including a `holding` key | Same schema as v1 |
 | `prompts/verdict_critique_prompt_v1.md` | Adversarial second opinion on an existing verdict | same wiki dict + the `ai_analyses` row being critiqued | `{agrees_with_verdict_direction, biggest_weakness, revised_price_targets{...}, revised_confidence, rationale}` |
+| `prompts/chat_prompt_v1.md` *(post-Phase-5)* | Grounded chat reply — restricted to tracked companies only | list of every tracked company's wiki dict + chat history + the new user message | `{reply}` |
 
 Both are schema-forced via Gemini's `response_schema` (not instruction-only parsing). Standalone
 test harness: `scripts/test_gemini_prompt.py` (`--fixture`, `--model`, `--repeat`, `--critique`
@@ -500,8 +512,57 @@ backfill on watchlist promote closes most of that gap immediately.
   networking note. Not blocking, but worth knowing about if the dev server ever seems stuck
   on first start.
 
+### Post-Phase-5 Addition — Categories, Holdings, Live Chart, Chat ✅ DONE
+Four features the user asked for before the planned visual design pass, sized (by the
+assistant's own assessment) as comparable to Phases 3+4 combined. Built in the user's
+explicitly chosen order — cheapest/lowest-risk first, each unlocking context the next one
+could use:
+
+- [x] **Categories** — sector-to-category taxonomy (`app/services/sector_taxonomy.py`,
+  keyword-matched, falls back to `"Other"`), wired additively into `wiki_service.assemble()`
+  and `watchlist_service.list_watchlist()` as a `category` field (the granular `sector` field
+  is untouched). Frontend: category filter chips on the dashboard, a category badge on the
+  wiki page infobox.
+- [x] **Holdings** — personal position tracking, explicitly scoped to shares + cost basis per
+  share only (user decision: not tax lots, not realized-gains accounting, not cross-brokerage
+  import). New `Holding` model/migration `0008`, `holdings_service` (upsert auto-promotes to
+  watchlist once, not per edit), `GET/POST/DELETE /holdings`. AI position-awareness: a new
+  `verdict_prompt_v2.md` adds a "Your Position" section (honest "no position" when none
+  exists) and became the default prompt for every verdict, not just held tickers. Frontend:
+  `/portfolio` route, "Your Position" panel on the wiki page.
+- [x] **Live Chart** — confirmed live before writing code that Finnhub's free tier does *not*
+  grant `/stock/candle` access, so "near-live" means aggregating repeated `/quote` polls into a
+  new `"5m"` `price_bars` interval server-side. New `GET /companies/{ticker}/price-history`
+  (historical daily bars) and `POST /companies/{ticker}/live-quote` (one poll, called by the
+  frontend every ~20s only while a company page is open — never a background scheduler, to
+  respect the free-tier quote budget). Frontend: `lightweight-charts` v5, a `PriceChart`
+  component on the wiki page. This covers the candlestick-chart half of what was originally
+  scoped as Phase 6/T6.1 below — the SMA/EMA/Bollinger/RSI/MACD overlays and benchmark-compare
+  toggle remain unbuilt.
+- [x] **Chat** — grounded AI chat (user decision: "grounded to tracked stocks only," never
+  Gemini's general knowledge, never a live market-wide scan). New `chat_messages` table
+  (migration `0009`, linear single-user history), `chat_prompt_v1.md`, `chat_service` grounds
+  every reply in every currently-tracked company's `wiki_service.assemble()` data, its own
+  lowest-priority `gemini_chat_budget_fraction` (0.2) so chat can never starve
+  scheduled/on-demand/critique. Frontend: `/chat` route.
+- **Verified:** 210/210 pytest (+49 from Phase 5's 161), stable across repeated full-suite
+  runs. Live-verified against the real running backend: the live-quote poll produced a real
+  `5m` bar from NVDA's real quote; the chat correctly answered a question about NVDA (a real
+  tracked ticker) using its real live price/technicals/position data, and correctly *refused*
+  to discuss Tesla (a real company, not tracked), naming real tracked alternatives instead —
+  confirming the grounding guarantee actually holds, not just that it compiles.
+- **Found and fixed two more instances of this project's recurring test-isolation bug class**
+  (real committed data leaking into tests expecting an empty/isolated state) — full detail in
+  [`documentations/tests/post-phase-5-additions.md`](tests/post-phase-5-additions.md#incident-the-same-test-isolation-bug-pattern-twice-more-different-shapes).
+- **Not verified — same honest limitation as Phase 5:** no interactive browser was available
+  this session, so the new frontend pieces (category chips, portfolio page, price chart, chat
+  page) are verified via clean `tsc -b && vite build` and real `curl` checks against the
+  running backend, not actual rendering/interactivity.
+
 ### Phase 6 — Charts
-- [ ] T6.1 `lightweight-charts` price panel: candlestick+volume, SMA/EMA/Bollinger overlays, RSI/MACD sub-panes, benchmark-compare toggle, verdict markers
+- [ ] T6.1 `lightweight-charts` price panel: ~~candlestick~~ (done, see Post-Phase-5 Addition
+  above) + volume, SMA/EMA/Bollinger overlays, RSI/MACD sub-panes, benchmark-compare toggle,
+  verdict markers
 - [ ] T6.2 Recharts: quarterly revenue/earnings bars, EPS/P-E trend, news-sentiment-over-time, allocation donut, peer comparison bars
 - [ ] T6.3 `/compare` route (2-5 tickers)
 - [ ] T6.4 Consult `dataviz` skill for palette/series-color assignment before finalizing
@@ -578,8 +639,11 @@ plan.md                              — narrative design doc (architecture rati
 spec.md                              — this file (requirements + task breakdown)
 .env / .env.example / .gitignore     — Gemini/Finnhub API key + DB URL handling (never committed)
 prompts/
-  verdict_prompt_v1.md               — first-pass verdict prompt (Phase 0, done)
+  verdict_prompt_v1.md               — first-pass verdict prompt (Phase 0, done; superseded
+                                        by v2 as the live default, kept for reproducibility)
+  verdict_prompt_v2.md               — adds a "Your Position" section (post-Phase-5, current default)
   verdict_critique_prompt_v1.md      — adversarial second-opinion prompt (Phase 0, done)
+  chat_prompt_v1.md                  — grounded chat reply prompt (post-Phase-5)
 scripts/
   test_gemini_prompt.py              — standalone prompt test harness (Phase 0, done)
   fixtures/
@@ -591,7 +655,8 @@ app/
   db/
     session.py, models.py            — Company, PriceBar, WikiSection (Phase 1-2); Watchlist,
                                         ProviderCallLog, JobRun (Phase 3); NewsArticle, AiAnalysis,
-                                        AiCritique (Phase 4); VerdictOutcome (post-Phase-4)
+                                        AiCritique (Phase 4); VerdictOutcome (post-Phase-4);
+                                        Holding, ChatMessage (post-Phase-5)
     migrations/versions/
       0001_initial.py                — companies, price_bars (Phase 1)
       0002_wiki_sections.py          — wiki_sections (Phase 2)
@@ -600,6 +665,8 @@ app/
       0005_ai_analyses_and_critiques.py — ai_analyses, ai_critiques (Phase 4)
       0006_add_gemini_provider.py    — adds 'gemini' to the providername enum (Phase 4)
       0007_verdict_outcomes.py       — verdict_outcomes (post-Phase-4)
+      0008_holdings.py               — holdings (post-Phase-5)
+      0009_chat_messages.py          — chat_messages (post-Phase-5)
   api/routers/
     health.py                        — GET /health (Phase 1)
     wiki.py                          — GET /companies/{ticker}/wiki, delegates to lookup_service (Phase 2)
@@ -609,21 +676,37 @@ app/
                                         /companies/{ticker}/critique (watchlist-only) (Phase 4)
     outcomes.py                      — POST /internal/evaluate-outcomes, GET /verdicts/track-record
                                         (post-Phase-4)
+    holdings.py                      — GET/POST/DELETE /holdings (post-Phase-5)
+    price_history.py                 — GET /companies/{ticker}/price-history,
+                                        POST /companies/{ticker}/live-quote (post-Phase-5)
+    chat.py                          — GET /chat/messages, POST /chat (post-Phase-5)
   jobs/
     scheduler.py                     — APScheduler wiring; calls the same refresh_service/
                                         outcome_service functions as their cron-facing routes
                                         (NFR-1) (Phase 3, extended post-Phase-4)
   services/
     wiki_service.py                  — assemble(ticker), now also surfaces recent_news/
-                                        price_summary/recent_swing_levels (Phase 2, extended Phase 4)
+                                        price_summary/recent_swing_levels (Phase 2, extended Phase 4),
+                                        category (post-Phase-5), holding (post-Phase-5)
+    sector_taxonomy.py               — categorize(sector) -> broad category, keyword-matched (post-Phase-5)
+    holdings_service.py              — upsert()/list_holdings()/remove()/get_for_company();
+                                        lazy-imports lookup_service/watchlist_service inside
+                                        upsert() to avoid a circular import with wiki_service (post-Phase-5)
+    live_price_service.py            — poll_and_record(): one /quote poll -> a "5m" price_bars
+                                        row (post-Phase-5)
+    chat_service.py                  — send_message()/list_messages(); grounds every reply in
+                                        every tracked company's wiki_service.assemble() data (post-Phase-5)
     lookup_service.py                — get_or_fetch(ticker) (Phase 2, T2.2)
     wiki_sections_service.py         — template-based section generation, real news_digest +
                                         technicals in key_metrics (Phase 2, extended Phase 4)
     ingest_service.py                — shared profile+quote+news upsert logic, recent_bars()/
                                         recent_news() readers (Phase 3, extended Phase 4),
-                                        bar_count()/bulk_upsert_bars() for backfill (post-Phase-4)
+                                        bar_count()/bulk_upsert_bars() for backfill (post-Phase-4),
+                                        bars_for_interval()/record_live_quote() for the near-live
+                                        chart's "5m" bars (post-Phase-5)
     provider_orchestrator.py         — fetch_with_fallback(), fetch_news_best_effort() (Phase 3, T3.3;
-                                        news added Phase 4), backfill_price_history() (post-Phase-4)
+                                        news added Phase 4), backfill_price_history() (post-Phase-4),
+                                        fetch_quote_best_effort() for the live-quote poll (post-Phase-5)
     rate_limiter.py                 — per-provider sliding window over provider_call_log, with a
                                         budget_fraction param for priority tiers (Phase 3, T3.4;
                                         extended Phase 4 for Gemini budget priority)
@@ -635,7 +718,8 @@ app/
                                         price_bars history, no new provider calls (Phase 4)
     ai_service.py                    — build_prompt()/build_critique_prompt(), generate_verdict(),
                                         analyze_scheduled(), generate_critique(), QuotaExhaustedError
-                                        (Phase 4, T4.2-T4.5)
+                                        (Phase 4, T4.2-T4.5); build_prompt() now defaults to
+                                        verdict_prompt_v2.md with position-awareness (post-Phase-5)
     outcome_service.py                — evaluate_pending_outcomes(): verdict vs actual price at a
                                         fixed horizon, reuses context_snapshot's snapshotted price
                                         (post-Phase-4)
@@ -657,7 +741,9 @@ tests/
                                         no live network)
   integration/                       — real Postgres, conftest.py rolls back per test, clears
                                         provider_call_log (protects rate_limiter/circuit_breaker
-                                        assertions from manual live testing), and provides a
+                                        assertions from manual live testing), also deactivates
+                                        pre-existing watchlist rows the same way (post-Phase-5 —
+                                        see that addition's test report for why), and provides a
                                         `client` fixture (TestClient wired to the same rolled-back
                                         session) for HTTP-level router tests
 frontend/                            — Vite + React + TypeScript + Tailwind v4 (Phase 5)
@@ -668,16 +754,20 @@ frontend/                            — Vite + React + TypeScript + Tailwind v4
     App.tsx                          — QueryClientProvider + AuthProvider + router wiring
     api/
       client.ts                      — fetch wrapper, attaches the stored bearer credential,
-                                        typed ApiError
+                                        typed ApiError; holdings/price-history/live-quote/chat
+                                        calls added post-Phase-5
       types.ts                       — hand-written TS types mirroring backend response shapes
       hooks.ts                       — React Query hooks, one query key per resource (FR-23)
     auth/AuthContext.tsx             — shared credential in localStorage, ProtectedRoute (T5.2)
     components/
-      Layout.tsx                     — nav rail (desktop) / bottom tabs (mobile)
+      Layout.tsx                     — nav rail (desktop) / bottom tabs (mobile); Portfolio/Chat
+                                        nav items added post-Phase-5
       FreshnessIndicator.tsx         — FR-24
       VerdictBadge.tsx, VerdictBanner.tsx, Skeleton.tsx
+      PriceChart.tsx                 — lightweight-charts candlestick + live-poll updates (post-Phase-5)
     routes/
       LoginPage.tsx, DashboardPage.tsx, SearchPage.tsx, CompanyPage.tsx
+      PortfolioPage.tsx, ChatPage.tsx (post-Phase-5)
 ```
 
 A `fundamentals` table still does not exist — Phase 4 deliberately did not add one (see that

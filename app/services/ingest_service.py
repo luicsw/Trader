@@ -124,6 +124,66 @@ def upsert_profile_and_quote(db: Session, ticker: str, profile: dict, quote: dic
     return db.get(Company, company_id)
 
 
+def bars_for_interval(db: Session, company_id: int, interval: str, limit: int = 500) -> list[PriceBar]:
+    """Ascending-order bars for a specific interval -- charting needs chronological order,
+    unlike recent_bars()/latest_bar() which serve descending-order lookback needs
+    (technicals/swing levels). Queried descending-with-limit then reversed, so `limit` bounds
+    to the most recent N bars rather than the oldest N.
+    """
+    bars = list(
+        db.scalars(
+            select(PriceBar)
+            .where(PriceBar.company_id == company_id, PriceBar.interval == interval)
+            .order_by(PriceBar.ts.desc())
+            .limit(limit)
+        ).all()
+    )
+    return list(reversed(bars))
+
+
+def record_live_quote(db: Session, company_id: int, price: float, bucket_minutes: int = 5) -> PriceBar:
+    """Aggregates a single /quote poll into a 5-minute "5m" price_bars row (Post-Phase-5
+    near-live chart addition) -- the free-tier substitute for a real intraday candle
+    endpoint (see provider_orchestrator.fetch_quote_best_effort). Buckets `now` down to the
+    nearest 5-minute boundary and upserts OHLC in place: first poll in a bucket sets
+    open/high/low/close, every later poll in the same bucket only ever widens high/low and
+    moves close, exactly like a real intraday candle converging from ticks.
+    """
+    now = datetime.now(timezone.utc)
+    epoch_minutes = int(now.timestamp() // 60)
+    bucket_ts = datetime.fromtimestamp(
+        (epoch_minutes - epoch_minutes % bucket_minutes) * 60, tz=timezone.utc
+    )
+
+    stmt = pg_insert(PriceBar).values(
+        company_id=company_id,
+        ts=bucket_ts,
+        interval="5m",
+        open=price,
+        high=price,
+        low=price,
+        close=price,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[PriceBar.company_id, PriceBar.ts, PriceBar.interval],
+        set_={
+            "high": func.greatest(PriceBar.high, stmt.excluded.high),
+            "low": func.least(PriceBar.low, stmt.excluded.low),
+            "close": stmt.excluded.close,
+        },
+    )
+    db.execute(stmt)
+    db.commit()
+
+    return db.scalar(
+        select(PriceBar).where(
+            PriceBar.company_id == company_id,
+            PriceBar.ts == bucket_ts,
+            PriceBar.interval == "5m",
+        )
+    )
+
+
 def upsert_news(db: Session, company_id: int, articles: list[dict]) -> None:
     """Upsert normalized article dicts (see providers/base.py DataProvider.get_news) via
     ON CONFLICT on (company_id, url) -- re-fetching the same article (e.g. it's still within

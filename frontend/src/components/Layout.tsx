@@ -7,6 +7,8 @@ import { useAuth } from '../auth/AuthContext'
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: '⌂' },
   { to: '/search', label: 'Search', icon: '⌕' },
+  { to: '/portfolio', label: 'Portfolio', icon: '◈' },
+  { to: '/chat', label: 'Chat', icon: '💬' },
 ]
 
 export function Layout() {

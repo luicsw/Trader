@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # daily budget is exhausted, reserving headroom for higher-priority callers.
     gemini_on_demand_budget_fraction: float = 0.7
     gemini_critique_budget_fraction: float = 0.4
+    # Chat (Post-Phase-5 addition) is the lowest-priority consumer of the daily budget --
+    # a burst of chat questions must never starve scheduled verdicts, on-demand analysis, or
+    # critiques, all of which are the app's core purpose.
+    gemini_chat_budget_fraction: float = 0.2
 
     # Verdict track record: checks whether verdicts/confidence are actually calibrated
     # against what price did afterward, rather than trusting the AI's self-reported

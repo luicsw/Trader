@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useAnalyses, usePromote, useRemoveFromWatchlist, useWiki } from '../api/hooks'
-import type { WikiSectionKey } from '../api/types'
+import type { Holding, WikiSectionKey } from '../api/types'
 import { FreshnessIndicator } from '../components/FreshnessIndicator'
+import { PriceChart } from '../components/PriceChart'
 import { Skeleton } from '../components/Skeleton'
 import { VerdictBadge } from '../components/VerdictBadge'
 import { VerdictBanner } from '../components/VerdictBanner'
@@ -15,7 +16,7 @@ const SECTION_TITLES: Record<WikiSectionKey, string> = {
   risks_notes: 'Risks / Notes',
 }
 
-// Company wiki page (FR-22) -- infobox → AI verdict banner → (price chart: Phase 6) →
+// Company wiki page (FR-22) -- infobox → AI verdict banner → price chart → your position →
 // overview → key metrics → financials → recent news → AI analysis history → risks/notes.
 //
 // FR-23 ("each section fetches independently") maps onto the backend's actual endpoint
@@ -65,9 +66,10 @@ export function CompanyPage() {
               )}
             </div>
             <p className="text-slate-400">{wiki.name ?? 'Unknown company'}</p>
-            <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
               {wiki.exchange && <span>{wiki.exchange}</span>}
               {wiki.sector && <span>· {wiki.sector}</span>}
+              <span className="rounded-full bg-slate-800 px-2 py-0.5 font-medium text-slate-300">{wiki.category}</span>
             </div>
           </div>
         </div>
@@ -92,6 +94,10 @@ export function CompanyPage() {
         latest={latestAnalysis}
         isLoading={analysesLoading}
       />
+
+      <PriceChart ticker={wiki.ticker} />
+
+      <PositionPanel holding={wiki.holding} ticker={wiki.ticker} />
 
       <Section title={SECTION_TITLES.overview} section={wiki.sections.overview} />
       <Section title={SECTION_TITLES.key_metrics} section={wiki.sections.key_metrics} />
@@ -151,6 +157,45 @@ export function CompanyPage() {
       </div>
 
       <Section title={SECTION_TITLES.risks_notes} section={wiki.sections.risks_notes} />
+    </div>
+  )
+}
+
+function PositionPanel({ holding, ticker }: { holding: Holding | null; ticker: string }) {
+  if (holding === null) {
+    return (
+      <div className="flex items-center justify-between rounded-2xl border border-dashed border-slate-800 p-4 text-sm">
+        <span className="text-slate-500">You don't hold a position in {ticker}.</span>
+        <Link to="/portfolio" className="font-medium text-sky-400 hover:text-sky-300">
+          + Add position
+        </Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Your Position</h2>
+        <Link to="/portfolio" className="text-xs font-medium text-sky-400 hover:text-sky-300">
+          Edit
+        </Link>
+      </div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="text-sm text-slate-300">
+          {holding.shares} shares @ ${holding.cost_basis_per_share.toFixed(2)} cost basis
+          {holding.notes && <div className="mt-1 text-xs text-slate-500">{holding.notes}</div>}
+        </div>
+        {holding.unrealized_gain != null && (
+          <div className="text-right">
+            <div className={`text-lg font-semibold ${holding.unrealized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {holding.unrealized_gain >= 0 ? '+' : ''}
+              ${holding.unrealized_gain.toFixed(2)}
+            </div>
+            <div className="text-xs text-slate-500">{holding.unrealized_gain_pct?.toFixed(1)}%</div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

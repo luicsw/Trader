@@ -15,6 +15,7 @@ from app.services import (
     lookup_service,
     provider_orchestrator,
     refresh_service,
+    sector_taxonomy,
     wiki_sections_service,
     wiki_service,
 )
@@ -94,6 +95,7 @@ def list_watchlist(db: Session) -> list[dict]:
                 "ticker": company.ticker,
                 "name": company.name,
                 "sector": company.sector,
+                "category": sector_taxonomy.categorize(company.sector),
                 "logo_url": company.logo_url,
                 "last_updated": company.last_profile_refresh_at.isoformat()
                 if company.last_profile_refresh_at

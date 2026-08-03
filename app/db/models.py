@@ -69,6 +69,11 @@ class JobStatus(str, enum.Enum):
     skipped = "skipped"
 
 
+class ChatRole(str, enum.Enum):
+    user = "user"
+    assistant = "assistant"
+
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -90,6 +95,7 @@ class Company(Base):
     wiki_sections: Mapped[list["WikiSection"]] = relationship(back_populates="company")
     watchlist_entry: Mapped["Watchlist | None"] = relationship(back_populates="company")
     news_articles: Mapped[list["NewsArticle"]] = relationship(back_populates="company")
+    holding: Mapped["Holding | None"] = relationship(back_populates="company")
 
 
 class PriceBar(Base):
@@ -159,6 +165,44 @@ class Watchlist(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     company: Mapped["Company"] = relationship(back_populates="watchlist_entry")
+
+
+class Holding(Base):
+    """Personal position tracking (Post-Phase-5 addition) -- deliberately scoped to shares +
+    cost basis only, not tax lots/realized-gains/cross-brokerage import (explicit user
+    decision). One row per company: editing an existing holding overwrites it in place
+    rather than accumulating lots.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("company_id", name="uq_holding_company"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    shares: Mapped[float] = mapped_column(Numeric)
+    cost_basis_per_share: Mapped[float] = mapped_column(Numeric)
+    acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    company: Mapped["Company"] = relationship(back_populates="holding")
+
+
+class ChatMessage(Base):
+    """Grounded AI chat (Post-Phase-5 addition) -- linear, single-user history, no
+    multi-conversation concept (spec.md's chat decision doesn't call for one). Append-only,
+    same philosophy as ai_analyses: never edited, ordered strictly by created_at.
+    """
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    role: Mapped[ChatRole] = mapped_column(Enum(ChatRole, name="chatrole"))
+    content: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ProviderCallLog(Base):

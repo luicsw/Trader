@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import Company, WikiSection
-from app.services import ingest_service, technicals_service
+from app.services import holdings_service, ingest_service, sector_taxonomy, technicals_service
 
 
 def assemble(db: Session, ticker: str) -> dict | None:
@@ -27,10 +27,12 @@ def assemble(db: Session, ticker: str) -> dict | None:
         "name": company.name,
         "exchange": company.exchange,
         "sector": company.sector,
+        "category": sector_taxonomy.categorize(company.sector),
         "description": company.description,
         "logo_url": company.logo_url,
         "market_cap": float(company.market_cap) if company.market_cap is not None else None,
         "coverage_tier": company.coverage_tier.value,
+        "holding": holdings_service.get_for_company(db, company.id),
         "last_updated": company.last_profile_refresh_at.isoformat()
         if company.last_profile_refresh_at
         else None,

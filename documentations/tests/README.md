@@ -14,15 +14,16 @@ passed/failed, and — where applicable — what broke and how it got fixed.
 | Post-Phase-4 — Verdict track record | [outcome-tracking.md](outcome-tracking.md) | 132/132 pytest — found & fixed a real scheduler restart bug |
 | Post-Phase-4 — Historical price backfill | [historical-backfill.md](historical-backfill.md) | 146/146 pytest + live verification with a real Alpha Vantage key |
 | 5 — Frontend core | [phase-5.md](phase-5.md) | 161/161 backend pytest + frontend verified via typecheck/lint/proxy only — **no browser available this session** |
+| Post-Phase-5 — Categories, Holdings, Live Chart, Chat | [post-phase-5-additions.md](post-phase-5-additions.md) | 210/210 pytest (+49) + live verification of the live chart and grounded chat against real APIs |
 
 ## Test count growth across phases
 
 ```mermaid
 xychart-beta
     title "Passing backend tests, end of each phase/addition"
-    x-axis ["Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 3 (hardened)", "Phase 4", "Track record", "Backfill", "Phase 5"]
-    y-axis "Passing tests" 0 --> 170
-    bar [0, 6, 16, 54, 63, 115, 132, 146, 161]
+    x-axis ["Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 3 (hardened)", "Phase 4", "Track record", "Backfill", "Phase 5", "Post-Phase-5"]
+    y-axis "Passing tests" 0 --> 220
+    bar [0, 6, 16, 54, 63, 115, 132, 146, 161, 210]
 ```
 
 *(Phase 0 is 0 because it predates the pytest suite entirely — it was validated by hand, see
@@ -32,7 +33,9 @@ before starting Phase 4, see [phase-3.md](phase-3.md#post-phase-hardening-reques
 "Track record" and "Backfill" are standalone additions after Phase 4, not part of the original
 phase numbering — see [outcome-tracking.md](outcome-tracking.md) and
 [historical-backfill.md](historical-backfill.md) for why. "Phase 5" only counts backend tests —
-the frontend has no automated test suite yet, see [phase-5.md](phase-5.md).)*
+the frontend has no automated test suite yet, see [phase-5.md](phase-5.md). "Post-Phase-5" bundles
+four features (categories, holdings, live chart, chat) built before the planned visual design
+pass — see [post-phase-5-additions.md](post-phase-5-additions.md).)*
 
 ## Where all 161 current backend tests came from
 
@@ -64,6 +67,7 @@ ever declared met with a known-failing test:
 | Track record | 132 (+17) | 100% (one real bug found and fixed — see below) |
 | Historical backfill | 146 (+14) | 100% (no product bugs; one real API-drift discovery — see below) |
 | 5 (backend) | 161 (+15) | 100%; frontend not covered by pytest — see below |
+| Post-Phase-5 (categories/holdings/live chart/chat) | 210 (+49) | 100% (two same-session test-isolation incidents found and fixed — see below) |
 
 Things worth calling out honestly, all self-diagnosed and resolved within the same session
 they occurred:
@@ -91,5 +95,12 @@ they occurred:
   TypeScript compilation, linting, and HTTP-level proxy checks confirming every API call
   resolves against real backend data — but actual rendering, routing, and interactivity were
   **not** checked. Detail: [phase-5.md](phase-5.md#honest-limitation-no-browser-was-available).
+- **Post-Phase-5**: the same test-isolation bug pattern as Phase 3/Phase 4, twice more, in two
+  different shapes — a real, currently-active `Watchlist` entry (the user's own, added via the
+  running frontend) leaked into tests expecting an empty watchlist, and real pre-existing
+  `Company` rows leaked into chat tests expecting nothing tracked. Fixed the first the Phase-3
+  way (reset shared state in the fixture, since it's disposable) and the second the Phase-4 way
+  (scope the test's own assertion instead, since `companies` holds real, meaningful data).
+  Detail: [post-phase-5-additions.md](post-phase-5-additions.md#incident-the-same-test-isolation-bug-pattern-twice-more-different-shapes).
 
 **Back to:** [project README](../../README.md) · [plan.md](../plan.md) · [spec.md](../spec.md)

@@ -3,12 +3,22 @@ import type {
   Analysis,
   AnalysisWithCritiques,
   ApiErrorBody,
+  ChatMessage,
   Critique,
+  Holding,
+  PriceBar,
   PromoteResult,
   SearchResult,
   Wiki,
   WatchlistSummary,
 } from './types'
+
+export interface HoldingInput {
+  shares: number
+  cost_basis_per_share: number
+  acquired_at?: string | null
+  notes?: string | null
+}
 
 export class ApiError extends Error {
   status: number
@@ -66,4 +76,30 @@ export const api = {
 
   getAnalyses: (ticker: string) =>
     apiFetch<AnalysisWithCritiques[]>(`/companies/${encodeURIComponent(ticker)}/analyses`),
+
+  getHoldings: () => apiFetch<Holding[]>('/holdings'),
+
+  upsertHolding: (ticker: string, input: HoldingInput) =>
+    apiFetch<Holding>(`/holdings/${encodeURIComponent(ticker)}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  removeHolding: (ticker: string) =>
+    apiFetch<{ ticker: string; removed: boolean }>(`/holdings/${encodeURIComponent(ticker)}`, {
+      method: 'DELETE',
+    }),
+
+  getPriceHistory: (ticker: string, interval: string, limit: number) =>
+    apiFetch<PriceBar[]>(
+      `/companies/${encodeURIComponent(ticker)}/price-history?interval=${interval}&limit=${limit}`,
+    ),
+
+  pollLiveQuote: (ticker: string) =>
+    apiFetch<PriceBar>(`/companies/${encodeURIComponent(ticker)}/live-quote`, { method: 'POST' }),
+
+  getChatMessages: () => apiFetch<ChatMessage[]>('/chat/messages'),
+
+  sendChatMessage: (message: string) =>
+    apiFetch<ChatMessage>('/chat', { method: 'POST', body: JSON.stringify({ message }) }),
 }

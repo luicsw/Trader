@@ -58,7 +58,7 @@ def test_generate_verdict_persists_analysis(db_session, monkeypatch):
     assert analysis.verdict == Verdict.buy
     assert analysis.confidence == 0.8
     assert analysis.trigger == AnalysisTrigger.on_demand
-    assert analysis.context_snapshot["prompt_version"] == "verdict_prompt_v1"
+    assert analysis.context_snapshot["prompt_version"] == "verdict_prompt_v2"
     stored = db_session.query(AiAnalysis).filter_by(company_id=analysis.company_id).one()
     assert stored.id == analysis.id
 

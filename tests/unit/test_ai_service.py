@@ -44,3 +44,26 @@ def test_wiki_to_prompt_data_thin_wiki_falls_back_honestly():
     assert data["exchange"] == "Unknown"
     assert data["overview_text"] == ""
     assert data["news_digest_last_6"] == []
+
+
+def test_wiki_to_prompt_data_no_holding_is_honest_about_no_position():
+    data = ai_service.wiki_to_prompt_data(_wiki())
+
+    assert "No position" in data["position_text"]
+    assert "AAPL" in data["position_text"]
+
+
+def test_wiki_to_prompt_data_includes_holding_details():
+    holding = {
+        "shares": 10.0,
+        "cost_basis_per_share": 150.0,
+        "acquired_at": "2026-01-15T00:00:00+00:00",
+        "notes": "Long-term conviction",
+        "unrealized_gain_pct": 33.3,
+    }
+    data = ai_service.wiki_to_prompt_data(_wiki(holding=holding))
+
+    assert "10.0 shares" in data["position_text"]
+    assert "$150.00/share" in data["position_text"]
+    assert "+33.3%" in data["position_text"]
+    assert "Long-term conviction" in data["position_text"]

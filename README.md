@@ -11,11 +11,15 @@ structured, testable spec and task breakdown (source of truth for *what's done*)
 
 **Current status:** Phase 0 through Phase 5 functionally complete (backend skeleton, wiki
 assembly, watchlist + scheduler + reliability, AI verdict + second-opinion pipeline, and a
-working frontend core). Phase 5's UI has **not yet been visually/interactively verified in a
+working frontend core), plus four more features added before the planned design pass:
+**stock categories**, **personal holdings tracking** (with AI position-awareness), a
+**near-live intraday price chart**, and a **grounded AI chat** restricted to companies you
+actually track. None of this frontend work has been **visually/interactively verified in a
 real browser** (this session had no interactive Chrome available) — open it yourself before
 trusting it beyond "it compiles and the API calls resolve." A dedicated visual design pass is
-planned next, before Phase 6 (charts). See [`documentations/spec.md`](documentations/spec.md)
-§9 for the full task breakdown.
+planned next, before the rest of Phase 6 (technical-indicator overlays, financials charts,
+compare view). See [`documentations/spec.md`](documentations/spec.md) §9 for the full task
+breakdown.
 
 ---
 
@@ -29,10 +33,22 @@ planned next, before Phase 6 (charts). See [`documentations/spec.md`](documentat
   suggested hold period — reasoning over *exactly* the same data the wiki page shows, never
   data the user can't also see. Plus an on-demand adversarial "second opinion" critique pass,
   restricted to watchlist tickers as extra quota protection.
-- A working frontend (dashboard, search, company wiki page) — functional but not yet visually
-  designed; a dedicated design pass is next. (Planned, Phase 6-7) A full fintech-style chart
-  set (candlesticks, indicators, fundamentals, news sentiment, peer comparison) and PWA
-  install/offline support.
+- A working frontend (dashboard, search, company wiki page, portfolio, chat) — functional but
+  not yet visually designed; a dedicated design pass is next. (Planned, Phase 6-7) A full
+  fintech-style chart set (technical-indicator overlays, fundamentals, news sentiment, peer
+  comparison) and PWA install/offline support remain.
+- Browse and filter tracked companies by **broad category** (Technology, Healthcare, Energy,
+  etc.) — keyword-mapped from each company's sector, shown on the dashboard and the wiki page.
+- Track your own **holdings** (shares + cost basis) per company — the AI verdict engine takes
+  your actual position into account (e.g. whether a stop-loss sits above or below your cost
+  basis) without ever letting it bias the verdict itself.
+- A **near-live intraday price chart** on every company's wiki page — candlesticks built from
+  real daily history plus a live-polled "right now" bar (Finnhub's free tier has no intraday
+  candle endpoint, so this is aggregated from repeated `/quote` polls instead).
+- **Chat with the AI** about your tracked companies — grounded strictly to what you're actually
+  watchlisting, holding, or have looked up; it will tell you plainly (and suggest tickers you
+  do track) rather than answer from general market knowledge if you ask about something outside
+  that set.
 - Never silently fails: every provider outage, rate limit, or AI quota exhaustion is degraded
   gracefully and surfaced, never hidden.
 - Tracks its own verdicts against what price actually did 30 days later, and whether the AI's
@@ -137,23 +153,27 @@ for how it's tested.
 
 ## What it looks like
 
-The frontend exists now (Phase 5) — dashboard, search, and the company wiki page all work
-functionally against the real backend — but it's using a plain, functional Tailwind baseline,
-not a final visual design. A dedicated design pass is next. The company wiki page — the core
-differentiator — is speced out in detail in `plan.md`; built so far, top to bottom (chart
-panel is Phase 6):
+The frontend exists now (Phase 5) — dashboard, search, company wiki page, portfolio, and chat
+all work functionally against the real backend — but it's using a plain, functional Tailwind
+baseline, not a final visual design. A dedicated design pass is next. The company wiki page —
+the core differentiator — is speced out in detail in `plan.md`; built so far, top to bottom
+(technical-indicator overlays/benchmark-compare are the remaining Phase 6 scope):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Infobox: name / ticker / logo / price / sector tags      │
+│ Infobox: name / ticker / logo / price / sector / category │
 │ Freshness indicator · Analyze with AI · Watchlist · Compare│
 ├─────────────────────────────────────────────────────────┤
 │ 🟢 AI VERDICT BANNER  (buy/hold/sell, confidence,          │
 │    price targets, hold period, cited sources,             │
 │    "Get Second Opinion" button)     <- 2nd thing on page   │
 ├─────────────────────────────────────────────────────────┤
-│ Price chart: candlesticks + volume, SMA/EMA/Bollinger,     │
-│ RSI/MACD sub-panes, benchmark compare, verdict markers      │
+│ Price chart: candlesticks (real daily history + a live-    │
+│ polled "right now" bar); SMA/EMA/Bollinger/RSI/MACD/       │
+│ benchmark-compare are still Phase 6 scope                  │
+├─────────────────────────────────────────────────────────┤
+│ Your Position: shares · cost basis · unrealized gain/loss  │
+│ (or "add a position" if you don't hold one)                │
 ├─────────────────────────────────────────────────────────┤
 │ Overview (encyclopedia-style prose)                        │
 │ Key Metrics (stat tiles)                                   │
@@ -163,6 +183,9 @@ panel is Phase 6):
 │ Risks / Notes                                              │
 └─────────────────────────────────────────────────────────┘
 ```
+
+Two more full pages exist alongside it: `/portfolio` (add/edit/remove holdings, totals) and
+`/chat` (ask the AI about anything you're tracking — grounded, never a general market scan).
 
 Mobile-first responsive shell (nav rail on desktop, bottom tab bar on mobile) is in place;
 full PWA install/offline support is Phase 7. Full detail in
@@ -217,6 +240,13 @@ curl -X POST http://127.0.0.1:8000/internal/analyze-scheduled # normally cron-tr
 curl -X POST "http://127.0.0.1:8000/companies/AAPL/critique?analysis_id=1"  # watchlist tickers only
 curl -X POST http://127.0.0.1:8000/internal/evaluate-outcomes  # normally cron-triggered
 curl http://127.0.0.1:8000/verdicts/track-record               # is the AI's confidence calibrated?
+curl -X POST http://127.0.0.1:8000/holdings/AAPL -H "Content-Type: application/json" \
+  -d '{"shares": 10, "cost_basis_per_share": 150.0}'            # add/edit a position
+curl http://127.0.0.1:8000/holdings                             # list positions with gain/loss
+curl http://127.0.0.1:8000/companies/AAPL/price-history?interval=1d
+curl -X POST http://127.0.0.1:8000/companies/AAPL/live-quote     # one near-live price poll
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" \
+  -d '{"message": "whats the best stock im tracking right now"}'  # grounded chat
 
 # Create a new migration after changing app/db/models.py
 alembic revision -m "describe the change"
@@ -245,11 +275,13 @@ app/
   main.py, config.py        — FastAPI app (lifespan starts/stops the scheduler), settings
   db/                        — SQLAlchemy models + Alembic migrations
   api/routers/                — health, wiki, watchlist, refresh, analysis (analyze/critique),
-                                outcomes (evaluate-outcomes/track-record)
+                                outcomes (evaluate-outcomes/track-record), holdings,
+                                price_history (price-history/live-quote), chat
   jobs/scheduler.py          — APScheduler, calls the same functions as their cron-facing routes
   services/                  — wiki_service, lookup_service, refresh_service, watchlist_service,
                                 provider_orchestrator, rate_limiter, circuit_breaker, ingest_service,
-                                technicals_service, ai_service, outcome_service
+                                technicals_service, ai_service, outcome_service, sector_taxonomy,
+                                holdings_service, live_price_service, chat_service
   providers/                 — Finnhub (primary) + Alpha Vantage (fallback) clients, Gemini client
 tests/
   unit/                      — no network, no DB (respx-mocked HTTP, pure-function logic)
@@ -257,8 +289,10 @@ tests/
 frontend/                    — Vite + React + TypeScript + Tailwind v4 (Phase 5)
   src/api/                    — fetch client, TS types, React Query hooks (one key per resource)
   src/auth/                   — shared-credential auth gate (client-side only for now)
-  src/components/              — Layout, FreshnessIndicator, VerdictBadge, VerdictBanner, Skeleton
-  src/routes/                  — LoginPage, DashboardPage, SearchPage, CompanyPage
+  src/components/              — Layout, FreshnessIndicator, VerdictBadge, VerdictBanner, Skeleton,
+                                PriceChart (lightweight-charts)
+  src/routes/                  — LoginPage, DashboardPage, SearchPage, CompanyPage, PortfolioPage,
+                                ChatPage
 prompts/                     — Gemini prompt templates (versioned by filename, never edited in place)
 scripts/                     — standalone Gemini prompt test harness (Phase 0 derisking)
 documentations/

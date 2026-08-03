@@ -52,3 +52,50 @@ def test_bulk_upsert_bars_empty_list_is_a_no_op(db_session):
     db_session.commit()
 
     assert ingest_service.bar_count(db_session, company.id) == 0
+
+
+def test_bars_for_interval_returns_ascending_order_within_the_given_interval(db_session):
+    company = _seed_company(db_session)
+    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    ingest_service.bulk_upsert_bars(
+        db_session, company.id, [{"ts": now - timedelta(days=i), "close": i} for i in range(5)]
+    )
+    db_session.commit()
+
+    bars = ingest_service.bars_for_interval(db_session, company.id, "1d", limit=5)
+
+    assert [bar.ts for bar in bars] == sorted(bar.ts for bar in bars)
+
+
+def test_bars_for_interval_excludes_other_intervals(db_session):
+    company = _seed_company(db_session)
+    ingest_service.record_live_quote(db_session, company.id, 10.0)
+
+    assert ingest_service.bars_for_interval(db_session, company.id, "1d") == []
+    assert len(ingest_service.bars_for_interval(db_session, company.id, "5m")) == 1
+
+
+def test_record_live_quote_creates_a_bar_on_first_poll(db_session):
+    company = _seed_company(db_session)
+
+    bar = ingest_service.record_live_quote(db_session, company.id, 10.0)
+
+    assert float(bar.open) == 10.0
+    assert float(bar.high) == 10.0
+    assert float(bar.low) == 10.0
+    assert float(bar.close) == 10.0
+    assert bar.interval == "5m"
+
+
+def test_record_live_quote_widens_high_low_and_moves_close_within_the_same_bucket(db_session):
+    company = _seed_company(db_session)
+    ingest_service.record_live_quote(db_session, company.id, 10.0)
+
+    ingest_service.record_live_quote(db_session, company.id, 12.0)
+    bar = ingest_service.record_live_quote(db_session, company.id, 8.0)
+
+    assert float(bar.open) == 10.0  # unchanged from the first poll in this bucket
+    assert float(bar.high) == 12.0
+    assert float(bar.low) == 8.0
+    assert float(bar.close) == 8.0  # most recent poll wins
+    assert ingest_service.bar_count(db_session, company.id) == 1  # same bucket, not a new row

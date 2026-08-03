@@ -2,9 +2,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider, ProtectedRoute } from './auth/AuthContext'
 import { Layout } from './components/Layout'
+import { ChatPage } from './routes/ChatPage'
 import { CompanyPage } from './routes/CompanyPage'
 import { DashboardPage } from './routes/DashboardPage'
 import { LoginPage } from './routes/LoginPage'
+import { PortfolioPage } from './routes/PortfolioPage'
 import { SearchPage } from './routes/SearchPage'
 
 const queryClient = new QueryClient({
@@ -32,6 +34,8 @@ function App() {
             >
               <Route path="/" element={<DashboardPage />} />
               <Route path="/search" element={<SearchPage />} />
+              <Route path="/portfolio" element={<PortfolioPage />} />
+              <Route path="/chat" element={<ChatPage />} />
               <Route path="/company/:ticker" element={<CompanyPage />} />
             </Route>
           </Routes>

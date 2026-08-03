@@ -113,6 +113,37 @@ def backfill_price_history(db, ticker: str) -> list[dict] | None:
     return bars
 
 
+def fetch_quote_best_effort(db, ticker: str) -> dict | None:
+    """Quote-only fetch for the near-live intraday price poll (Post-Phase-5 addition) --
+    Finnhub's free tier has no intraday candle endpoint (confirmed live: /stock/candle
+    returns a 403-shaped access error), so the frontend polls this while a company page is
+    open and the result is aggregated into 5-minute price_bars server-side
+    (ingest_service.record_live_quote). Best-effort like fetch_news_best_effort: never
+    raises, returns None if unconfigured/unavailable/failed -- a missed poll is just one gap
+    in the live line, never a broken page.
+    """
+    if not settings.finnhub_api_key:
+        return None
+
+    name = ProviderName.finnhub
+    if not circuit_breaker.is_available(db, name):
+        return None
+    if not rate_limiter.allow(db, name):
+        return None
+
+    client = FinnhubClient(settings.finnhub_api_key)
+    try:
+        quote = client.get_quote(ticker)
+    except Exception:
+        rate_limiter.record_call(db, name, CallStatus.failure)
+        db.commit()
+        return None
+
+    rate_limiter.record_call(db, name, CallStatus.success)
+    db.commit()
+    return quote
+
+
 def search_symbols_best_effort(db, query: str) -> list[dict]:
     """Ticker/name search (spec.md FR-8/§7) -- Finnhub only, no Alpha Vantage fallback (its
     equivalent SYMBOL_SEARCH isn't worth spending the scarce fallback-only daily budget on a

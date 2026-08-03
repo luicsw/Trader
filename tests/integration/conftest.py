@@ -3,10 +3,10 @@ transaction that's rolled back afterward, so nothing persists in the shared dev 
 """
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import ProviderCallLog
+from app.db.models import ProviderCallLog, Watchlist
 from app.db.session import engine, get_db
 from app.main import app
 
@@ -22,6 +22,14 @@ def db_session():
     # depends on provider call history. Deleting existing rows here only affects this
     # test's transaction, which is rolled back below, so nothing is actually lost.
     session.execute(delete(ProviderCallLog))
+    # analyze_scheduled/refresh_watchlist/list_watchlist all operate on "every active
+    # watchlist entry" globally, not just rows a test creates -- a real ticker a user
+    # actually adds via the running app (not just drill data) would otherwise leak into
+    # tests expecting an empty/known watchlist, and worse, could get picked up by
+    # analyze_scheduled and trigger a real Gemini call mid-test-run. Deactivating (not
+    # deleting) pre-existing entries here only affects this test's transaction, rolled
+    # back below, so real watchlist data is untouched once the test finishes.
+    session.execute(update(Watchlist).values(active=False))
     try:
         yield session
     finally:

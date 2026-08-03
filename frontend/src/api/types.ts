@@ -46,15 +46,40 @@ export interface WikiSection {
 
 export type WikiSectionKey = 'overview' | 'key_metrics' | 'financials_summary' | 'news_digest' | 'risks_notes'
 
+export interface PriceBar {
+  ts: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+}
+
+export interface Holding {
+  ticker: string
+  name: string | null
+  category: string
+  shares: number
+  cost_basis_per_share: number
+  acquired_at: string | null
+  notes: string | null
+  latest_price: number | null
+  market_value: number | null
+  cost_basis_total: number
+  unrealized_gain: number | null
+  unrealized_gain_pct: number | null
+}
+
 export interface Wiki {
   ticker: string
   name: string | null
   exchange: string | null
   sector: string | null
+  category: string
   description: string | null
   logo_url: string | null
   market_cap: number | null
   coverage_tier: CoverageTier
+  holding: Holding | null
   last_updated: string | null
   latest_price: LatestPrice | null
   price_summary: PriceSummary
@@ -72,6 +97,7 @@ export interface WatchlistSummary {
   ticker: string
   name: string | null
   sector: string | null
+  category: string
   logo_url: string | null
   last_updated: string | null
   latest_price: { close: number | null; ts: string } | null
@@ -131,4 +157,11 @@ export interface AnalysisWithCritiques extends Analysis {
 
 export interface ApiErrorBody {
   detail: string
+}
+
+export interface ChatMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
 }
