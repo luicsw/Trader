@@ -1,7 +1,13 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
-**Status:** Phase 0 through Phase 5 functionally complete, Phase 6 not started · **Last updated:** 2026-08-03
+**Status:** Phase 0 through Phase 5 functionally complete, plus "Post-Phase-5 Addition #1"
+(categories, holdings, live chart, chat) complete. "Post-Phase-5 Addition #2" (portfolio income
+projections, second-LLM forecasts, ticker autocomplete) and "Post-Phase-5 Addition #3"
+(observability, data retention, alerts, backtest vs. benchmark, fundamentals ingestion) both
+specced but not started. Phase 6 not started · **Last updated:** 2026-08-04
 (Phase 5's UI has not been visually/interactively verified in a real browser — see its section below.)
+**Two FR-21 routes are still unbuilt:** `/compare` (scheduled, Phase 6 T6.3) and `/settings`
+(never in any task list until Addition #3 — see that section).
 
 **Relationship to `plan.md`:** `plan.md` is the narrative design doc — architecture rationale,
 rejected alternatives, tradeoffs. This file is the structured, testable specification and task
@@ -108,7 +114,10 @@ Grouped by area. IDs are referenced from the task breakdown in §9.
 
 ### 3.6 Frontend
 - **FR-21**: THE SYSTEM SHALL provide routes: `/login`, `/` (dashboard), `/search`,
-  `/company/:ticker`, `/compare`, `/settings`.
+  `/company/:ticker`, `/portfolio`, `/chat`, `/compare`, `/settings`. *(Built as of Addition #1:
+  all but `/compare` — deferred to Phase 6 T6.3 — and `/settings`, which no phase ever
+  scheduled; it is now a task under Addition #3's budget dashboard, because that feature,
+  Phase 7's install prompt (T7.2), and the auth-credential UI all assume it exists.)*
 - **FR-22**: The company wiki page SHALL render, in order: infobox header → AI verdict banner
   (badge, rationale, confidence, price-target strip, hold period, cited sources, "Get Second
   Opinion" button) → price chart panel → overview → key metrics → financials → recent news →
@@ -125,6 +134,136 @@ Grouped by area. IDs are referenced from the task breakdown in §9.
 - **FR-26**: All non-trivial endpoints SHALL require a single shared bearer/basic-auth
   credential (env var/secret) — no per-user accounts.
 
+### 3.8 Portfolio income projection *(planned — Post-Phase-5 Addition #2)*
+- **FR-27**: WHEN the user requests projected income for a horizon (30/60/90 days) — for the
+  whole portfolio, a single holding, or an arbitrary selected subset — THE SYSTEM SHALL compute
+  expected profit per eligible holding as `(latest ai_analyses.price_targets.sell_at_or_above -
+  holdings.cost_basis_per_share) * holdings.shares`, and SHALL sum across the selected set for
+  the aggregate figure.
+- **FR-28**: A holding is only eligible for horizon *H*'s projection if its latest analysis has
+  a non-null `sell_at_or_above` target AND `hold_period_days.min <= H`. WHEN a holding is
+  ineligible (no analysis, no target, or the AI's own suggested minimum hold period exceeds
+  *H*), THE SYSTEM SHALL report that holding's projection as `null` with an explicit reason
+  string, never silently omitted or defaulted to zero.
+- **FR-29**: `GET /portfolio/projected-income` SHALL return all three horizons (30/60/90)
+  together by default, so one endpoint serves whole-portfolio, single-stock, and arbitrary-subset
+  views without extra round trips. It SHALL accept two optional filters: `tickers` (restrict the
+  holdings included) and `horizon` (restrict the response to a single horizon). Both are
+  narrowing filters only — omitting them returns every holding at every horizon.
+
+### 3.9 Multi-horizon forecast (second LLM) *(planned — Post-Phase-5 Addition #2)*
+- **FR-30**: WHEN a forecast is requested for a watchlist ticker, THE SYSTEM SHALL render
+  `prompts/forecast_prompt_v1.md` against `wiki_service.assemble(ticker)` (the same data the
+  user can see — same traceability guarantee as FR-10) and call **Groq** with schema-forced JSON
+  output covering horizons 30/60/90/180/360 days, each with an expected low, expected high,
+  **its own per-horizon confidence**, and rationale, in a single call. Confidence is per-horizon
+  rather than one value for the whole set, both because `price_forecasts` stores one row per
+  horizon (a single top-level value would just be copied into all five) and because confidence
+  genuinely should decay from 30d to 360d — that decay is useful signal, not noise.
+- **FR-31**: THE SYSTEM SHALL persist every forecast generation as new `price_forecasts` rows
+  (append-only, one row per horizon per generation, never overwritten), analogous to
+  `ai_analyses`.
+- **FR-32**: The forecast pass SHALL be on-demand only and restricted to watchlist tickers —
+  never run as part of a scheduled job, and rejected for lookup-tier tickers — mirroring the
+  critique pass's gating (FR-19, and the "watchlist-only" resolution in §11).
+- **FR-33**: Groq calls SHALL be retried/rate-limited/circuit-broken exactly like every other
+  provider (FR-1 through FR-5 pattern), on a budget entirely independent of Gemini's — Groq
+  quota exhaustion SHALL degrade the same way as Gemini's (FR-16: a clear "try later" response,
+  never a silent failure or generic 500). Because that machinery logs to
+  `provider_call_log.provider`, `groq` MUST be added to **both** the `ProviderName` Python enum
+  and the Postgres `providername` type before any Groq call can succeed — see the migration task
+  in Addition #2.
+
+### 3.10 Ticker directory / autocomplete *(planned — Post-Phase-5 Addition #2)*
+- **FR-34**: THE SYSTEM SHALL expose `GET /tickers/search?q=` backed by a locally cached
+  `ticker_directory` table — no live provider call per request — refreshed periodically (weekly)
+  by a dedicated job, so it's safe to call on every keystroke of a type-ahead dropdown. The bulk
+  source endpoint SHALL be confirmed free-tier accessible before ingestion code is written (see
+  the derisk task in Addition #2); if trigram matching is used rather than plain `ILIKE`, the
+  `pg_trgm` extension SHALL be created by migration, not assumed present.
+- **FR-35**: WHEN adding or editing a holding, THE SYSTEM SHALL offer a type-ahead dropdown
+  backed by FR-34, but SHALL still allow manual ticker entry for symbols absent from the local
+  directory (e.g. newly listed or OTC tickers) — never a hard block on manual entry.
+
+### 3.11 Observability *(planned — Post-Phase-5 Addition #3)*
+- **FR-36**: THE SYSTEM SHALL expose current-day usage vs. configured budget for every
+  rate-limited provider (Finnhub, Alpha Vantage, Gemini, Groq) via `GET /status/budget`, so
+  quota exhaustion is visible before a request is rejected, not only after.
+- **FR-37**: WHEN a company has more than one `ai_analyses` row, THE SYSTEM SHALL include a
+  diff of the latest row against the immediately preceding one (verdict changed, confidence
+  delta, price-target deltas, hold-period change) in the `GET /companies/{ticker}/analyses`
+  response. This diff SHALL be computed by a single shared function that FR-41's
+  `verdict_change` alert trigger also calls — both features need exactly "did the verdict change
+  versus the previous analysis for this company", and it is implemented once, not twice.
+
+### 3.12 Data retention *(planned — Post-Phase-5 Addition #3)*
+- **FR-38**: THE SYSTEM SHALL prune `"5m"`-interval `price_bars` rows older than a configured
+  `price_bars_retention_days`, while never pruning `"1d"`-interval rows, via the same
+  dual-trigger (cron + APScheduler) pattern as every other job (NFR-1).
+
+### 3.13 Fundamentals ingestion *(planned — Post-Phase-5 Addition #3)*
+- **FR-39**: WHEN a ticker is promoted to the watchlist, and thereafter on a low-frequency
+  scheduled refresh (not the 15-30 min price/news cycle), THE SYSTEM SHALL fetch fundamentals
+  (revenue, net income, EPS, margins, FCF) via Alpha Vantage and upsert into the `fundamentals`
+  table (already in §6, never implemented), subject to the same rate-limiter/circuit-breaker
+  treatment as every other Alpha Vantage call.
+- **FR-40**: Fundamentals refresh SHALL run at most monthly per company, never on the main
+  refresh cadence, to protect Alpha Vantage's small daily budget already relied on for price
+  fallback, news fallback, and historical backfill.
+
+### 3.14 Alerts *(planned — Post-Phase-5 Addition #3)*
+- **FR-41**: Immediately after each scheduled refresh/analysis cycle completes, THE SYSTEM
+  SHALL evaluate alert conditions and persist any newly triggered condition as a new `alerts`
+  row. Two condition families:
+  - `verdict_change` — verdict direction changed since the prior analysis, detected via FR-37's
+    shared diff function.
+  - `sell_target_hit` / `stop_loss_hit` — price crossed a stored `sell_at_or_above` or
+    `stop_loss` target. Crossing SHALL be tested against the **latest `"1d"` bar's `high` and
+    `low`**, not its `close`: scheduled refresh only ever writes a `"1d"` bar truncated to
+    midnight UTC, and `"5m"` bars exist only while a company page is open in a browser
+    (Addition #1's live-quote poll), so `close` alone would silently miss any target crossed and
+    then retraced within the same session. High/low costs nothing extra — it is data already in
+    the row being written.
+- **FR-41a**: Alert evaluation SHALL skip `watchlist` rows with `is_benchmark = true` (FR-45) —
+  a benchmark is tracked for price history only and has no verdicts or targets to alert on.
+- **FR-42**: THE SYSTEM SHALL NOT create a new alert for a condition that already has an
+  unacknowledged open alert of the same `alert_type` for the same company.
+- **FR-43**: THE SYSTEM SHALL expose `GET /alerts` (unacknowledged + recent) and `POST
+  /alerts/{id}/acknowledge`.
+- **FR-44** *(stretch, sequenced after Phase 7)*: WHEN the user has granted browser push
+  permission, THE SYSTEM SHALL additionally deliver new alerts as a Web Push notification
+  (VAPID, free) — best-effort only, never the sole delivery channel (NFR-7).
+
+### 3.15 Backtest vs. benchmark *(planned — Post-Phase-5 Addition #3)*
+- **FR-45**: THE SYSTEM SHALL designate one or more benchmark tickers (default `SPY`) that
+  receive watchlist-level continuous *price* tracking regardless of whether the user holds them,
+  solely to support benchmark comparison. Benchmarks SHALL be marked with a new
+  `watchlist.is_benchmark` flag and SHALL be excluded from every other consequence of watchlist
+  membership. "On the watchlist" has accreted five consequences across the phases; a benchmark
+  must inherit exactly one of them. **Excluded:**
+  - no `initial`-trigger AI analysis on promote (FR-11) and no recurring scheduled analysis
+    (FR-13) — a benchmark burns zero Gemini quota, ever;
+  - not returned by `GET /watchlist`, so it never appears as a dashboard card;
+  - not included in `chat_service`'s grounding set (which today grounds on *every* tracked
+    company), so chat replies aren't diluted by an index the user doesn't hold;
+  - not evaluated for alerts (FR-41a).
+
+  **Retained:** scheduled price refresh and the one-time historical backfill — that is the entire
+  point of tracking it.
+- **FR-46**: `GET /verdicts/backtest?benchmark=` SHALL compute the hypothetical aggregate
+  return of following every historical `buy` verdict (enter at verdict-time price, exit at
+  horizon or at its sell target if hit first — "hit" tested against daily bar `high`/`low` for
+  the same reason FR-41 does) versus holding the benchmark ticker over the same
+  window, broken down by confidence bucket like the existing track-record endpoint. This is a
+  simplified historical simulation (no fees/slippage, single historical path) — see NFR-8.
+- **FR-46a**: The backtest SHALL report the window it actually covered, and SHALL exclude
+  verdicts predating the benchmark's own `price_bars` history rather than silently comparing
+  against nothing. The benchmark's history starts at whatever the one-time Alpha Vantage backfill
+  provides (`outputsize=compact`, ~100 trading days — `full` is premium-gated, confirmed live in
+  the post-Phase-4 backfill addition) counted from the day it is first tracked, so early on the
+  comparable window is short and the aggregate is correspondingly noisy. Stating the window is
+  the mitigation; deepening it is not possible on the free tier.
+
 ---
 
 ## 4. Non-Functional Requirements
@@ -135,8 +274,10 @@ Grouped by area. IDs are referenced from the task breakdown in §9.
 | NFR-2 | Entire stack must run at $0/month: Neon free Postgres, Render free web service, GitHub Actions free cron, Vercel/Netlify free static hosting, Gemini free tier. |
 | NFR-3 | Mobile-first responsive: bottom tab bar on phone / nav rail on desktop, ≥44px touch targets, RSI/MACD panes collapse to accordion on narrow screens. |
 | NFR-4 | No silent failures anywhere — every failure path (provider, AI, job) is logged to `job_runs` and/or Sentry and surfaced to the user in some form. |
-| NFR-5 | Reproducibility: every `ai_analyses`/`ai_critiques` row stores the exact `context_snapshot` sent to Gemini; prompt changes are versioned by filename (`_v2.md`, etc.), never edited in place. |
+| NFR-5 | Reproducibility: every `ai_analyses` row stores the exact `context_snapshot` sent to Gemini; prompt changes are versioned by filename (`_v2.md`, etc.), never edited in place. **Known gap:** `ai_critiques` has no `context_snapshot` column of its own (see §6) — a critique is only reproducible via the `ai_analyses` row it points to, which is *not* the same thing, since a critique run days later reads freshly-refreshed wiki data. Either add the column (migration) or accept that critiques are less reproducible than verdicts; do not claim otherwise. |
 | NFR-6 | Accepted cold-start tradeoff: first request after Render idle may take 10-30s — never treated as a bug. |
+| NFR-7 *(planned)* | Web Push alert delivery (FR-44) is best-effort — browser/OS support varies (notably iOS Safari) — the in-app alerts feed (FR-43) SHALL remain the reliable channel regardless of push delivery success. |
+| NFR-8 *(planned)* | The backtest (FR-46) SHALL be presented as a simplified historical simulation, not a validated trading strategy — no fees/slippage modeling, single historical path, no claim about future performance. |
 
 ---
 
@@ -147,7 +288,9 @@ Grouped by area. IDs are referenced from the task breakdown in §9.
  GitHub Actions (cron) ──POST /internal/analyze-scheduled──▶  │                    │
                                                                ├─▶ Finnhub (primary)
                                                                ├─▶ Alpha Vantage (fallback)
-                                                               └─▶ Gemini (verdict + critique)
+                                                               ├─▶ Gemini (verdict + critique + chat)
+                                                               └─▶ Groq (forecast, separate quota,
+                                                                    on-demand only) *(planned)*
 
  React PWA ──HTTPS/JSON──▶ FastAPI ──reads only──▶ Postgres
 ```
@@ -165,19 +308,23 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | Table | Key columns | Constraints / indexes |
 |---|---|---|
 | `companies` | name, exchange, sector, description, logo, market_cap, `coverage_tier` (watchlist\|lookup), `last_profile_refresh_at` | PK on ticker/id |
-| `watchlist` | company_id, refresh_interval_minutes, last_scheduled_refresh_at, last_scheduled_analysis_at, active | FK → companies |
+| `watchlist` | company_id, refresh_interval_minutes, last_scheduled_refresh_at, last_scheduled_analysis_at, active, `is_benchmark` *(planned — Post-Phase-5 Addition #3)* | FK → companies; `is_benchmark = true` means price-tracking only — no AI analysis, no dashboard card, no chat grounding, no alerts (FR-45) |
 | `price_bars` | company_id, ts, interval, open/high/low/close/volume | UNIQUE `(company_id, ts, interval)`; INDEX `(company_id, interval, ts DESC)` |
 | `news_articles` | company_id, headline, summary, url, source, published_at, sentiment | UNIQUE `(company_id, url)` |
-| `fundamentals` | company_id, period, fiscal_period, revenue, net_income, eps, margins, fcf... | UNIQUE `(company_id, period, fiscal_period)` |
+| `fundamentals` *(speced since Phase 1, still unimplemented — see Post-Phase-5 Addition #3)* | company_id, period, fiscal_period, revenue, net_income, eps, margins, fcf... | UNIQUE `(company_id, period, fiscal_period)` |
 | `wiki_sections` | company_id, section_key (overview\|financials_summary\|news_digest\|key_metrics\|risks_notes), body, generated_at | UNIQUE `(company_id, section_key)` |
 | `ai_analyses` | company_id, verdict, confidence, reasoning_text, **price_targets** (JSONB: buy_at_or_below/sell_at_or_above/stop_loss), **hold_period_days** (JSONB: min/max/note), cited_sources (JSONB), context_snapshot (JSONB), trigger (scheduled\|on_demand\|initial), generated_at | Append-only; INDEX `(company_id, generated_at DESC)` |
-| `ai_critiques` | analysis_id (FK → ai_analyses), agrees_with_verdict_direction (bool), biggest_weakness (text), revised_price_targets (JSONB, nullable per field), revised_confidence (nullable float), rationale (text), generated_at | Append-only; always on-demand-triggered |
+| `ai_critiques` | analysis_id (FK → ai_analyses), agrees_with_verdict_direction (bool), biggest_weakness (text), revised_price_targets (JSONB, nullable per field), revised_confidence (nullable float), rationale (text), generated_at | Append-only; always on-demand-triggered. **No `context_snapshot` column** — see NFR-5's known gap; a critique reads wiki data as of *its own* run time, which may differ from the analysis it critiques |
 | `provider_call_log` | provider, status, called_at | Backs rate limiter + circuit breaker; audit trail |
 | `job_runs` | job_name, status, error_message, attempt | Never-silent-failure observability |
 | `verdict_outcomes` *(post-Phase-4 addition)* | analysis_id (FK → ai_analyses), horizon_days, price_at_verdict, price_at_horizon, price_change_pct, directionally_correct, evaluated_at | Append-only; UNIQUE `(analysis_id)` (single fixed horizon) — checks verdict/confidence calibration against actual price, see §9 "Post-Phase-4 Addition" |
 | `holdings` *(post-Phase-5 addition)* | company_id, shares, cost_basis_per_share, acquired_at, notes, created_at, updated_at | UNIQUE `(company_id)` — one row per company, not tax lots (explicit scope decision) |
 | `chat_messages` *(post-Phase-5 addition)* | role (user\|assistant), content, created_at | Append-only, linear, single-user — no multi-conversation concept |
 | `price_bars` interval `"5m"` *(post-Phase-5 addition)* | same columns as the `"1d"` rows above, one bucket per 5 minutes | Aggregated server-side from repeated `/quote` polls (Finnhub's free tier has no intraday candle endpoint) — not a new table, just a new `interval` value in the existing `price_bars` table |
+| `price_forecasts` *(planned — Post-Phase-5 Addition #2)* | company_id, horizon_days, expected_low, expected_high, confidence, rationale, model, trigger, generated_at | Append-only, one row per horizon per generation; INDEX `(company_id, horizon_days, generated_at DESC)`. `confidence` is **per-horizon**, sourced from the prompt's per-horizon field (FR-30) — not one value copied across five rows |
+| `ticker_directory` *(planned — Post-Phase-5 Addition #2)* | symbol, name, exchange, security_type, updated_at | UNIQUE `(symbol)`; bulk-refreshed weekly, backs local autocomplete (FR-34). Bulk source endpoint to be confirmed free-tier accessible first — Finnhub's symbol listing if free, Alpha Vantage `LISTING_STATUS` otherwise |
+| `alerts` *(planned — Post-Phase-5 Addition #3)* | company_id, alert_type (verdict_change\|sell_target_hit\|stop_loss_hit), message, triggered_at, acknowledged, acknowledged_at | Not append-only — `acknowledged` is a real state transition; "one open alert per `(company_id, alert_type)`" enforced in `alert_service`, not a DB constraint (FR-41–43) |
+| `push_subscriptions` *(planned, stretch — Post-Phase-5 Addition #3)* | endpoint, p256dh_key, auth_key, created_at | UNIQUE `(endpoint)`; only needed if the Web Push extension (FR-44) is built |
 
 ---
 
@@ -187,13 +334,14 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 |---|---|---|---|
 | `GET /health` | Liveness probe | none | For Render health checks |
 | `GET /status` | Recent `job_runs` + provider health summary | shared credential | Post-deploy verification target |
+| `GET /status/budget` *(planned — Post-Phase-5 Addition #3)* | Current-day usage vs. configured budget per rate-limited provider (FR-36) | shared credential | Reuses `rate_limiter`'s existing sliding-window computation, no new tracking |
 | `GET /companies/search?q=` | Ticker/name search — proxies Finnhub's `/search` (Phase 5, built alongside the frontend that needed it) | shared credential | Backs `/search` route; Finnhub-only, no Alpha Vantage fallback (not worth the fallback-only budget for a discovery feature) |
 | `GET /companies/{ticker}/wiki` | Full assembled wiki page (FR-8, FR-9) | shared credential | `last_updated` on every field group |
 | `GET /watchlist` *(Phase 5)* | Summary list of active watchlist companies (ticker/name/latest price/latest verdict) | shared credential | Backs the dashboard grid; deliberately thin, not a full wiki assembly per ticker |
 | `POST /watchlist/{ticker}/promote` | Add to watchlist + trigger initial refresh/analysis (FR-11) | shared credential | Idempotent |
 | `DELETE /watchlist/{ticker}` | Remove from watchlist (FR-12) | shared credential | Does not delete history |
 | `POST /companies/{ticker}/analyze` | On-demand AI verdict (FR-14) | shared credential | 429-style clear response on quota exhaustion (FR-16) |
-| `GET /companies/{ticker}/analyses` *(Phase 5)* | Full verdict history with nested critiques | shared credential | Backs the verdict banner (latest) + "AI Analysis History" section (FR-22); no separate "latest analysis" endpoint |
+| `GET /companies/{ticker}/analyses` *(Phase 5; response extended — Post-Phase-5 Addition #3)* | Full verdict history with nested critiques, latest row includes a diff against the prior one (FR-37) | shared credential | Backs the verdict banner (latest) + "AI Analysis History" section (FR-22); no separate "latest analysis" endpoint |
 | `POST /companies/{ticker}/critique?analysis_id=` | On-demand second opinion (FR-18) | shared credential | Lowest budget priority (FR-20) |
 | `POST /internal/refresh` | Cron-triggered refresh for all active watchlist tickers | shared credential | Idempotent, safe no-op if too soon |
 | `POST /internal/analyze-scheduled` | Cron-triggered daily scheduled analyses | shared credential | Budget-priority applies (FR-17) |
@@ -207,6 +355,17 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `POST /companies/{ticker}/live-quote` *(post-Phase-5)* | One near-live price poll, aggregated into a `"5m"` bar | shared credential | Called by the frontend only while a company page is open, ~every 20s |
 | `GET /chat/messages` *(post-Phase-5)* | Full chat history | shared credential | Backs `/chat` |
 | `POST /chat` *(post-Phase-5)* | Send a chat message, get a grounded AI reply | shared credential | Grounded to tracked companies only (user decision); lowest Gemini budget priority |
+| `GET /portfolio/projected-income?tickers=&horizon=` *(planned — Post-Phase-5 Addition #2)* | Expected profit at 30/60/90-day horizons, whole portfolio / single stock / selected subset (FR-27–29) | shared credential | Pure computation over existing `holdings` + latest `ai_analyses`; no new AI call. Both params are optional narrowing filters — bare call returns all holdings × all three horizons (FR-29) |
+| `POST /companies/{ticker}/forecast` *(planned — Post-Phase-5 Addition #2)* | On-demand multi-horizon (30/60/90/180/360d) high/low forecast via Groq (FR-30–32) | shared credential | Watchlist-only, on-demand-only, mirrors `/critique`'s gating; own independent Groq budget |
+| `GET /companies/{ticker}/forecasts` *(planned — Post-Phase-5 Addition #2)* | Latest + historical forecast rows | shared credential | Backs a new wiki-page forecast panel |
+| `GET /tickers/search?q=&limit=` *(planned — Post-Phase-5 Addition #2)* | Local-only ticker/name autocomplete for the Add Holding form (FR-34–35) | shared credential | No live provider call; distinct from `/companies/search` (which proxies Finnhub live) |
+| `POST /internal/refresh-ticker-directory` *(planned — Post-Phase-5 Addition #2)* | Cron-triggered weekly bulk refresh of `ticker_directory` | shared credential | Same dual-trigger pattern as every other job (NFR-1); source endpoint pending the derisk check in §9 |
+| `POST /internal/prune-price-bars` *(planned — Post-Phase-5 Addition #3)* | Cron-triggered deletion of `"5m"` bars older than `price_bars_retention_days` (FR-38) | shared credential | Never touches `"1d"` rows; same dual-trigger pattern (NFR-1) |
+| `POST /internal/refresh-fundamentals` *(planned — Post-Phase-5 Addition #3)* | Cron-triggered monthly fundamentals refresh for watchlist companies (FR-39, FR-40) | shared credential | Alpha Vantage-sourced; deliberately low-frequency to protect its small daily budget |
+| `GET /alerts` *(planned — Post-Phase-5 Addition #3)* | Unacknowledged + recent alerts (FR-43) | shared credential | Backs the nav bell-icon feed |
+| `POST /alerts/{id}/acknowledge` *(planned — Post-Phase-5 Addition #3)* | Acknowledge an alert (FR-43) | shared credential | Clears the "open alert" state for that `(company, alert_type)` |
+| `GET /verdicts/backtest?benchmark=` *(planned — Post-Phase-5 Addition #3)* | Hypothetical strategy return vs. a benchmark ticker, by confidence bucket (FR-45, FR-46) | shared credential | Simplified historical simulation — see NFR-8 |
+| `POST /push/subscribe` / `DELETE /push/subscribe` *(planned, stretch — Post-Phase-5 Addition #3)* | Register/remove a Web Push subscription (FR-44) | shared credential | Only needed if the Web Push extension is built; sequenced after Phase 7's service worker |
 
 ---
 
@@ -221,8 +380,11 @@ standalone in Phase 0 before any backend code was written (see §9).
 | `prompts/verdict_prompt_v2.md` *(post-Phase-5, current default)* | Same as v1 plus a "Your Position" section (holdings-aware, honest "no position" when none exists) | same wiki dict, now including a `holding` key | Same schema as v1 |
 | `prompts/verdict_critique_prompt_v1.md` | Adversarial second opinion on an existing verdict | same wiki dict + the `ai_analyses` row being critiqued | `{agrees_with_verdict_direction, biggest_weakness, revised_price_targets{...}, revised_confidence, rationale}` |
 | `prompts/chat_prompt_v1.md` *(post-Phase-5)* | Grounded chat reply — restricted to tracked companies only | list of every tracked company's wiki dict + chat history + the new user message | `{reply}` |
+| `prompts/forecast_prompt_v1.md` *(planned — Post-Phase-5 Addition #2)* | Multi-horizon (30/60/90/180/360d) expected low/high forecast, second independent model (Groq) | `wiki_service.assemble(ticker)` dict | `{forecasts: [{horizon_days, expected_low, expected_high, confidence, rationale}]}` — confidence is per-horizon (FR-30), not one value for the set |
 
-Both are schema-forced via Gemini's `response_schema` (not instruction-only parsing). Standalone
+Every Gemini-backed prompt above is schema-forced via `response_schema` (not instruction-only
+parsing); the Groq-backed forecast prompt uses Groq's own JSON/schema mode for the same reason.
+Standalone
 test harness: `scripts/test_gemini_prompt.py` (`--fixture`, `--model`, `--repeat`, `--critique`
 flags) against fixtures in `scripts/fixtures/` (`sample_wiki_data.json` — synthetic normal case,
 `sample_wiki_thin.json` — synthetic thin/contradictory case, `aapl_live.json` — real researched
@@ -505,6 +667,12 @@ backfill on watchlist promote closes most of that gap immediately.
   separate endpoint and a separate query key. A slow AI-history fetch never blocks the wiki
   sections from rendering, and vice versa, which is the actual intent of FR-23 — there's no
   per-wiki-section backend endpoint to fetch even more granularly than that.
+- **FR-21 routes not delivered by this phase:** `/compare` (deliberate — it's Phase 6 T6.3, since
+  it needs the chart components) and `/settings` (**not deliberate — it was simply never in any
+  phase's task list**, despite FR-21 requiring it since the first draft and Phase 7's install
+  prompt assuming it). Now scheduled as the first task of Addition #3's budget dashboard, which is
+  the next feature that needs somewhere to render. Phase 5 stays ✅ for what T5.1–T5.6 actually
+  listed; this is a spec-level gap being recorded, not retroactively failing the phase.
 - **Known environment friction:** Vite's dependency pre-bundling step logged one `EACCES`
   permission error on a rename inside `node_modules/.vite/deps` on first run, then recovered
   and served correctly — almost certainly OneDrive's file-sync locking interfering with a
@@ -558,6 +726,193 @@ could use:
   this session, so the new frontend pieces (category chips, portfolio page, price chart, chat
   page) are verified via clean `tsc -b && vite build` and real `curl` checks against the
   running backend, not actual rendering/interactivity.
+
+### Post-Phase-5 Addition #2 — Portfolio Income Projections, Multi-Horizon Forecasts (Second LLM), Ticker Autocomplete
+Three features requested directly by the user before starting Phase 6 (charts). Sized and
+sequenced by the same habit as every prior multi-feature addition in this project: cheapest and
+lowest-risk first, each step not depending on the next.
+
+- [ ] **Ticker directory / autocomplete** (build first — no AI, no quota risk)
+  - [ ] **Derisk the bulk symbol endpoint live, before writing ingestion code.** This project's
+    established habit, applied here because it was initially missed: Finnhub's free tier has
+    already rejected two endpoints this plan assumed it had (`/stock/candle` in Addition #1,
+    `/company-news` in Phase 4) and Alpha Vantage gated a third (`outputsize=full`,
+    post-Phase-4). One `curl` against `/stock/symbol?exchange=US` with the real key confirms
+    whether it returns a symbol array or an upsell message. **Fallback if gated:** Alpha
+    Vantage's `LISTING_STATUS` (CSV of all active US symbols) — a once-weekly bulk pull is well
+    within even AV's small daily budget, unlike anything on the refresh cadence.
+  - [ ] `ticker_directory` table + migration; `CREATE EXTENSION IF NOT EXISTS pg_trgm` in the
+    same migration if trigram search is used (Neon supports it, but it is not enabled by default)
+  - [ ] `services/ticker_directory_service.py::refresh_directory()` — bulk upsert from whichever
+    endpoint the derisk step confirmed
+  - [ ] `GET /tickers/search?q=&limit=` — ILIKE/trigram search against the local table only,
+    zero live provider calls (FR-34)
+  - [ ] `POST /internal/refresh-ticker-directory` + weekly APScheduler job, same dual-trigger
+    pattern as every other job (NFR-1)
+  - [ ] Frontend: type-ahead combobox on the "Add Holding" form; manual-entry fallback
+    preserved for symbols not yet in the directory (FR-35)
+  - **Verify:** directory populates from a real bulk pull; typing a partial name/ticker
+    in Add Holding returns matches with zero new provider rows in `provider_call_log`; an
+    obscure/newly-listed ticker absent from the directory can still be typed manually and
+    resolves via the existing lookup/promote path.
+
+- [ ] **Portfolio income projection** (build second — pure computation, no new provider)
+  - [ ] `services/portfolio_projection_service.py::compute_projected_income(holdings,
+    horizon_days)` — eligibility + expected-profit math (FR-27, FR-28)
+  - [ ] `GET /portfolio/projected-income?horizon=&tickers=` (FR-29)
+  - [ ] Frontend: `/portfolio` gets a 30/60/90-day projection panel — toggle between all
+    holdings, one stock, or a multi-select subset; ineligible projections rendered with their
+    reason string (never hidden or zeroed), matching the existing honest-null convention used
+    for price targets elsewhere
+  - **Verify:** unit tests for the eligibility/bucketing logic (hold-period-vs-horizon, missing
+    target, missing analysis, each producing the correct reason string); integration test
+    against seeded holdings + analyses; live check against real holdings, hand-computing
+    expected values to compare.
+
+- [ ] **Multi-horizon forecast — second LLM (Groq)** (build third — new provider, new prompt,
+  highest complexity)
+  - [ ] Derisk standalone first, same habit as Phase 0: a small script calling Groq against a
+    real wiki fixture, confirming it returns real, sensibly-varying high/low numbers per
+    horizon (not a refusal/hedge) before any backend code is built assuming it works
+  - [ ] **`ProviderName.groq` + `ALTER TYPE providername ADD VALUE 'groq'` migration — do this
+    before the client.** Called out as its own task because Phase 4 hit precisely this bug with
+    `gemini`: the Python enum member was added, the Postgres `ALTER TYPE` was forgotten, and the
+    very first rate-limiter check died on `invalid input value for enum providername` (fixed by
+    migration `0006` — see Phase 4's bug list). The rate limiter, circuit breaker, and
+    `provider_call_log` writer all key off this enum, so *no* Groq call can succeed until both
+    halves exist. Copy `0006`'s pattern verbatim: `ALTER TYPE providername ADD VALUE IF NOT
+    EXISTS 'groq'` on upgrade, documented no-op on downgrade (Postgres has no `DROP VALUE`).
+  - [ ] `providers/groq_client.py` — own retry/backoff + rate-limit bucket + circuit breaker,
+    entirely independent of Gemini's budget (FR-33)
+  - [ ] `prompts/forecast_prompt_v1.md` — schema-forced JSON, all five horizons in one call to
+    conserve quota, per-horizon `confidence` (FR-30)
+  - [ ] `price_forecasts` table + migration (FR-31)
+  - [ ] `services/forecast_service.py::build_forecast_prompt()` / `generate_forecast()`
+  - [ ] `POST /companies/{ticker}/forecast` — watchlist-only, on-demand-only, mirroring
+    `/critique`'s gating exactly (FR-30, FR-32)
+  - [ ] `GET /companies/{ticker}/forecasts`
+  - [ ] Frontend: forecast panel on the wiki page (per-horizon low/high — consult the
+    `dataviz` skill for how to render a range-band across 5 horizons before finalizing),
+    "Generate Forecast" button gated the same way "Get Second Opinion" is for lookup-tier
+    tickers
+  - **Verify:** live Groq call against a real watchlist ticker — confirm `price_forecasts` rows
+    land for all 5 horizons and the low/high band widens sensibly with horizon length; confirm
+    a lookup-tier ticker is rejected (400) exactly like `/critique`; confirm Groq quota
+    exhaustion returns the same style of clear "try later" message as Gemini's, never a silent
+    failure or generic 500.
+  - **Deferred, not required for this addition:** blending Groq's horizon-matched high/low into
+    the income projection above (instead of relying solely on Gemini's single price target) —
+    ship the two independently first; revisit once both have real usage.
+
+- **Verify (whole addition):** each sub-feature's own verify step above passes; full test suite
+  still green; all three UI additions visually/interactively confirmed in a real browser
+  (carrying forward the same "open it yourself" caveat Phase 5 and its post-phase addition
+  both flagged as outstanding).
+
+### Post-Phase-5 Addition #3 — Observability, Data Retention, Alerts, Backtest vs. Benchmark, Fundamentals
+Six sub-features requested directly by the user after reviewing the app's own flagged gaps
+(§12 risks, the unimplemented `fundamentals` table, the never-built `price_bars` retention
+policy). Sequenced cheapest/lowest-risk-first, same habit as every prior addition:
+
+- [ ] **Budget dashboard** (build first — trivial, reuses existing `rate_limiter` computation)
+  - [ ] **Build the `/settings` route** — FR-21 has listed it since the beginning but no phase
+    ever scheduled it, and `frontend/src/App.tsx` currently registers only `/login`, `/`,
+    `/search`, `/portfolio`, `/chat`, `/company/:ticker`. It is the container this feature's
+    usage bars, Phase 7's install prompt (T7.2), and the shared-credential UI all assume exists,
+    so it gets built here rather than being assumed a fourth time. `SettingsPage.tsx` + nav entry
+    in `Layout.tsx`.
+  - [ ] `GET /status/budget` (FR-36)
+  - [ ] Frontend: per-provider usage bars on `/settings`
+  - **Verify:** matches hand-counted `provider_call_log` rows for the current day, per provider;
+    `/settings` reachable from the nav on both desktop rail and mobile tab bar.
+
+- [ ] **Verdict-change diff** (build second — trivial, pure computation over existing `ai_analyses`)
+  - [ ] **Shared** diff function comparing the latest `ai_analyses` row to the immediately
+    preceding one for the same company (FR-37) — built here as the single implementation that the
+    alerts step below also calls for its `verdict_change` trigger (FR-41), rather than each
+    feature growing its own copy of "did the verdict change". Return the full diff (verdict flip,
+    confidence delta, target deltas, hold-period change); the alert path just reads the
+    verdict-flip field off it.
+  - [ ] Extend `GET /companies/{ticker}/analyses` response with the diff on the latest entry
+  - [ ] Frontend: "changed since last analysis" callout on the verdict banner
+  - **Verify:** unit tests covering verdict-flip, confidence-delta, price-target-delta, and
+    first-ever-analysis (no prior to diff against, diff is null) cases.
+
+- [ ] **`price_bars` retention/pruning** (build third — small, no new provider)
+  - [ ] `services/retention_service.py::prune_price_bars()` — deletes `"5m"` rows older than
+    `price_bars_retention_days`, never touches `"1d"` rows (FR-38)
+  - [ ] `POST /internal/prune-price-bars` + weekly APScheduler job (NFR-1 pattern)
+  - **Verify:** integration test seeding old + recent `"5m"` and `"1d"` rows, confirming only
+    old `"5m"` rows are deleted.
+
+- [ ] **Alerts — in-app feed** (build fourth — small-medium, no new provider)
+  - [ ] `alerts` table + migration
+  - [ ] `services/alert_service.py::evaluate_alerts()` — called right after each scheduled
+    refresh/analysis cycle completes (FR-41), with dedup against existing open alerts (FR-42)
+  - [ ] Price-crossing checks read the latest `"1d"` bar's **`high`/`low`, not `close`** (FR-41):
+    scheduled refresh writes one midnight-UTC-truncated daily bar, and `"5m"` bars only exist
+    while a company page happens to be open in a browser, so a `close`-only check silently misses
+    any stop-loss or sell target that was crossed and then retraced the same session. Reuse the
+    verdict-change half from the shared diff function above, not a second implementation.
+  - [ ] Skip `is_benchmark` watchlist rows (FR-41a) — nothing to alert on
+  - [ ] `GET /alerts`, `POST /alerts/{id}/acknowledge` (FR-43)
+  - [ ] Frontend: bell icon + unacknowledged count in nav, alerts feed
+  - **Verify:** integration tests for each trigger condition (verdict flip, sell-target
+    crossed, stop-loss crossed) and for the no-duplicate-open-alert rule; **explicitly test the
+    intraday-retrace case** — a daily bar whose `low` breached the stop-loss but whose `close`
+    recovered above it must still fire; live check triggering a real condition against a real
+    watchlist ticker.
+  - **Deferred to its own step below:** Web Push delivery — ship the in-app feed alone first.
+
+- [ ] **Backtest vs. benchmark** (build fifth — medium, extends existing `verdict_outcomes`)
+  - [ ] `watchlist.is_benchmark` column + migration, and the **five exclusions** it implies
+    (FR-45) — this is the substance of the task, not a footnote to it. Today "on the watchlist"
+    means: an `initial` Gemini analysis on promote (`watchlist_service.promote()`), recurring
+    scheduled analysis (`ai_service.analyze_scheduled()`), a dashboard card
+    (`watchlist_service.list_watchlist()`), inclusion in chat grounding (`chat_service` grounds on
+    *every* tracked company), and alert evaluation. A benchmark must inherit none of those — only
+    price refresh and one-time backfill. Left unhandled, SPY would spend real Gemini quota daily
+    and dilute every chat reply with an index the user doesn't hold.
+  - [ ] Designate default benchmark ticker(s) (`SPY`) via config, tracked regardless of holdings
+  - [ ] `services/backtest_service.py::simulate_follow_all_verdicts(benchmark)` (FR-46)
+  - [ ] Report the covered window and exclude verdicts predating the benchmark's own
+    `price_bars` history (FR-46a) — the benchmark starts with ~100 trading days from the
+    Alpha Vantage compact backfill, so early results cover a short, noisy window
+  - [ ] `GET /verdicts/backtest?benchmark=`
+  - [ ] Frontend: extend the track-record page with a strategy-vs-benchmark comparison
+  - **Verify:** unit tests for the entry/exit simulation logic against seeded verdicts +
+    price_bars; integration test comparing against a hand-computed expected return; **a test
+    asserting a benchmark ticker gets zero `ai_analyses` rows, never appears in `GET /watchlist`,
+    and is absent from chat grounding**; UI clearly labels this as a simplified simulation over a
+    stated window (NFR-8, FR-46a), not investment advice.
+
+- [ ] **Fundamentals ingestion** (build last — medium complexity, real Alpha Vantage budget risk)
+  - [ ] **Derisk live first**, same habit as the historical-backfill addition: confirm
+    `OVERVIEW`/`INCOME_STATEMENT`/`BALANCE_SHEET`/`CASH_FLOW` are actually free-tier accessible
+    (not premium-gated like `outputsize=full` turned out to be) before writing ingestion code
+  - [ ] `AlphaVantageClient` methods for the above endpoints
+  - [ ] Ingestion wired into `watchlist_service.promote()` (one-time) plus a **monthly**
+    scheduled refresh — deliberately not the 15-30 min cadence (FR-39, FR-40)
+  - [ ] `POST /internal/refresh-fundamentals` + monthly APScheduler job
+  - [ ] Upsert into the existing (never-implemented) `fundamentals` table
+  - [ ] Confirm `ai_service`'s `financials_summary_last_4_periods` actually populates from real
+    data once this lands, instead of the honest empty array it's produced since Phase 4
+  - **Verify:** live check against a real ticker confirming real fundamentals land in the
+    table and flow into a subsequent verdict's `context_snapshot`; confirm Alpha Vantage's
+    daily budget isn't measurably more strained by adding this (check `provider_call_log`
+    volume before/after over a few days).
+
+- [ ] **Web Push extension for alerts** *(stretch, sequenced after Phase 7's service worker exists)*
+  - [ ] `push_subscriptions` table + migration
+  - [ ] Service worker push event handler (added alongside Phase 7's `vite-plugin-pwa` setup)
+  - [ ] `push_service.py` sends a Web Push (VAPID) notification on new alert creation (FR-44)
+  - [ ] `POST /push/subscribe`, `DELETE /push/subscribe`
+  - **Verify:** real push notification received on a real device; confirm the in-app feed
+    still works identically with push permission denied (NFR-7 — push is never the only channel).
+
+- **Verify (whole addition):** each sub-feature's own verify step passes; full test suite still
+  green; new `/settings` route, budget dashboard, alerts feed, and backtest page visually
+  confirmed in a real browser.
 
 ### Phase 6 — Charts
 - [ ] T6.1 `lightweight-charts` price panel: ~~candlestick~~ (done, see Post-Phase-5 Addition
@@ -629,6 +984,40 @@ could use:
   instead of assumed); not addressed by it: still no fundamentals, still one AI call, still no
   validated edge. Treat current verdicts as a research starting point, not a trusted answer,
   until real track-record data accumulates over weeks/months.
+- **Groq's free-tier model lineup drifts/deprecates over time** — the same class of risk
+  already seen with Gemini model aliasing (§11 #2). Mitigated the same way: a config knob, not
+  a hardcoded model id, and the exact model stamped into each `price_forecasts` row (NFR-5
+  pattern).
+- **The multi-horizon forecast is a second independently-reasoned opinion, not a validated
+  forecasting model** — same caveat as the verdict risk above, arguably sharper at the 180/360-
+  day horizons where there's no realistic way to backtest yet. Treat it as a research input
+  alongside the verdict, not a trusted number, until real elapsed time lets it be checked
+  against actual prices (the same mechanism `verdict_outcomes` already applies to verdicts
+  could extend to forecasts later, but doesn't yet).
+- **Fundamentals ingestion competes for Alpha Vantage's already-small daily budget** (also
+  relied on for price fallback, news fallback, and historical backfill) — mitigated by making
+  it deliberately low-frequency (promote-time + monthly, never the main refresh cadence, FR-40),
+  but worth watching if AV's free cap ever tightens further.
+- **The backtest vs. benchmark is a simplified historical simulation, not a validated trading
+  strategy** (NFR-8) — no fees/slippage, single historical path, no claim about future
+  performance. Same "research input, not a trusted number" framing as the verdict/forecast
+  risks above, applied to an aggregate instead of a single call.
+- **Web Push alert delivery is best-effort** — browser/OS support (notably iOS Safari) varies
+  and isn't guaranteed (NFR-7); the in-app alerts feed is the reliable channel regardless of
+  whether push succeeds.
+- **Price-target alerts are day-resolution, not intraday.** The only price data a scheduled cycle
+  can rely on is one `"1d"` bar per company per day (`"5m"` bars exist only while a page is open
+  in a browser — Addition #1's live-quote poll is frontend-driven by design, to respect the free
+  quote budget). Testing crossings against that bar's `high`/`low` rather than `close` (FR-41)
+  recovers same-day breaches that retraced, which is most of the gap for free — but an alert still
+  can't fire *while* a target is being crossed, only after the day's bar reflects it. Acceptable
+  for a research tool that is explicitly not day-trading (same framing as NFR-6's cold start); a
+  hard blocker only if this ever became an execution tool, which it is not (§1 Out of scope).
+- **New-provider integrations must touch two enums, not one.** Adding Groq means both
+  `ProviderName` in Python and the Postgres `providername` type; Phase 4 shipped the first without
+  the second and the first Gemini rate-limiter check failed outright. Recorded as a standing risk
+  rather than a one-off bug because it will recur for every future provider — the mitigation is
+  the explicit migration task now written into Addition #2's checklist.
 
 ---
 
@@ -670,6 +1059,7 @@ app/
   api/routers/
     health.py                        — GET /health (Phase 1)
     wiki.py                          — GET /companies/{ticker}/wiki, delegates to lookup_service (Phase 2)
+    search.py                        — GET /companies/search?q=, proxies Finnhub's /search (Phase 5)
     watchlist.py                     — POST /watchlist/{ticker}/promote, DELETE /watchlist/{ticker} (Phase 3)
     refresh.py                       — POST /internal/refresh (Phase 3)
     analysis.py                      — POST /companies/{ticker}/analyze, /internal/analyze-scheduled,
