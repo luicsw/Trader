@@ -4,7 +4,8 @@
 (categories, holdings, live chart, chat) complete. "Post-Phase-5 Addition #2" (portfolio income
 projections, second-LLM forecasts, ticker autocomplete) and "Post-Phase-5 Addition #3"
 (observability, data retention, alerts, backtest vs. benchmark, fundamentals ingestion) both
-specced but not started. Phase 6 not started · **Last updated:** 2026-08-04
+specced but not started. Phase 6 not started · **Suite: 210/210 green, all 9 migrations
+round-trip** (see "Verification run — 2026-08-04") · **Last updated:** 2026-08-04
 (Phase 5's UI has not been visually/interactively verified in a real browser — see its section below.)
 **Two FR-21 routes are still unbuilt:** `/compare` (scheduled, Phase 6 T6.3) and `/settings`
 (never in any task list until Addition #3 — see that section).
@@ -727,6 +728,51 @@ could use:
   page) are verified via clean `tsc -b && vite build` and real `curl` checks against the
   running backend, not actual rendering/interactivity.
 
+### Verification run — 2026-08-04 (no new features; suite health check)
+A full-stack check with nothing under construction, run to confirm the current state is green
+before Addition #2 starts. Result: **210/210 pytest, frontend build clean, all 9 migrations
+round-trip** — but it took a fixture fix to get there.
+
+- **Backend suite initially 200/210**, with 10 failures across `test_chat_service.py`,
+  `test_chat_router.py`, `test_holdings_service.py`, `test_holdings_router.py` — the **fourth
+  recurrence of this project's recurring test-isolation bug class** (after `provider_call_log` in
+  Phase 3, `ai_analyses` in Phase 4, and two more in Addition #1). Cause: the shared dev database
+  now holds genuine user data — 2 real holdings (NVDA 1.18, MSFT 0.2985955 shares) and 9 real
+  chat messages, from actually using the app — and those tests assert on totals (`== 0`, `== 1`,
+  `== 2`, exact content lists).
+- **Diagnosed before fixing, not assumed**: every failing assertion was a global count/list, while
+  every behavioral assertion in the same tests (`pytest.raises(NoTrackedCompaniesError)`,
+  `QuotaExhaustedError`, `PermanentProviderError`) passed. Re-running all 25 tests in those four
+  files against a freshly-created throwaway database: **25/25 pass**. That isolates it definitively
+  to test setup, not application code.
+- **Fix follows the `Watchlist` precedent, not the `ai_analyses` one** — the distinction matters
+  and is why this wasn't just copied from Phase 4. Phase 4's `ai_analyses` failures were the
+  *tests'* fault: they asserted a global row count when they could have scoped to their own
+  `company_id`, so the assertions were narrowed rather than broadening the fixture. Here,
+  `holdings_service.list_holdings()` and `chat_service.list_messages()` are **global reads by
+  design** ("all my positions", "the whole conversation") — `test_list_holdings_empty` has no
+  company to scope to, and asserting emptiness is the correct test. That is exactly the
+  `Watchlist` situation, so the same remedy applies: `tests/integration/conftest.py`'s
+  `db_session` fixture now also deletes pre-existing `ChatMessage` and `Holding` rows inside the
+  test's transaction, which is rolled back afterward.
+- **Verified the rollback actually protects real data** (the whole premise of the fixture): after
+  the full 210-test run, the dev DB still held exactly NVDA 1.18, MSFT 0.2985955, 9 chat messages,
+  6 companies, 3 active watchlist entries — unchanged.
+- **Frontend**: `tsc -b && vite build` clean (92 modules, 460 kB / 144 kB gzipped), `oxlint` 0
+  errors and the same 2 known `AuthContext.tsx` fast-refresh warnings as Phase 5. Still no
+  interactive browser in this session — the standing "open it yourself" caveat from Phase 5 and
+  Addition #1 remains outstanding, unchanged.
+- **Migration round-trip, newly covered**: `upgrade head` → `downgrade base` → `upgrade head` on
+  a disposable database, all 9 migrations each direction, leaving only `alembic_version` behind at
+  base. Phase 3's hardening ran this when only `0001`–`0003` existed, so `0004`–`0009`'s
+  `downgrade()` functions had **never actually been executed** until now. They all work,
+  including `0006`'s deliberate no-op (Postgres has no `DROP VALUE`, and dropping `0003`'s enum
+  type covers it — proven by the clean re-upgrade).
+- **Standing lesson, now four for four**: any service function that reads "everything" rather than
+  "everything for company X" will eventually collide with real dev data, and the collision surfaces
+  as a confusing test failure long after the feature shipped. When adding such a function, decide
+  at that moment whether its tests scope their assertions or the fixture neutralizes the table.
+
 ### Post-Phase-5 Addition #2 — Portfolio Income Projections, Multi-Horizon Forecasts (Second LLM), Ticker Autocomplete
 Three features requested directly by the user before starting Phase 6 (charts). Sized and
 sequenced by the same habit as every prior multi-feature addition in this project: cheapest and
@@ -1133,7 +1179,10 @@ tests/
                                         provider_call_log (protects rate_limiter/circuit_breaker
                                         assertions from manual live testing), also deactivates
                                         pre-existing watchlist rows the same way (post-Phase-5 —
-                                        see that addition's test report for why), and provides a
+                                        see that addition's test report for why) and clears
+                                        pre-existing holdings/chat_messages rows (2026-08-04
+                                        verification run — same reason, global-by-design reads),
+                                        and provides a
                                         `client` fixture (TestClient wired to the same rolled-back
                                         session) for HTTP-level router tests
 frontend/                            — Vite + React + TypeScript + Tailwind v4 (Phase 5)

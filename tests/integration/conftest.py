@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import ProviderCallLog, Watchlist
+from app.db.models import ChatMessage, Holding, ProviderCallLog, Watchlist
 from app.db.session import engine, get_db
 from app.main import app
 
@@ -30,6 +30,16 @@ def db_session():
     # deleting) pre-existing entries here only affects this test's transaction, rolled
     # back below, so real watchlist data is untouched once the test finishes.
     session.execute(update(Watchlist).values(active=False))
+    # holdings_service.list_holdings() and chat_service.list_messages() are global reads by
+    # design -- "all my positions", "the whole conversation" -- so unlike the ai_analyses
+    # incident in Phase 4, their tests have no company_id to scope an assertion to and
+    # legitimately assert on totals ("empty", "exactly the two I just seeded"). Once real
+    # holdings and real chat history exist in this shared dev database (they do -- the app is
+    # in actual use), those totals collide with genuine user data. Same reasoning and same
+    # remedy as the Watchlist case above: neutralize pre-existing rows inside this test's
+    # transaction, which is rolled back below, so real data is untouched once the test ends.
+    session.execute(delete(ChatMessage))
+    session.execute(delete(Holding))
     try:
         yield session
     finally:
