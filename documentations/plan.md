@@ -21,6 +21,12 @@ numbers. Requirements gathered through discussion:
   building a separate native app.
 - No Claude/Anthropic API key is available for this project — AI reasoning uses Google
   Gemini's free tier instead.
+- **No Groq API key is available either, as of 2026-08-05** — sign-up/sign-in for Groq is
+  currently blocked for the user. The second-LLM multi-horizon forecast below is therefore
+  built as **dormant infrastructure**: the code, migration, prompt, and UI ship, but the
+  feature stays switched off and *must not* affect the app's working state or usage while
+  `GROQ_API_KEY` is unset. Dropping a key into `.env` later is the only step needed to
+  activate it (plus the standalone derisk run, which is deferred until then).
 
 This plan combines two independent designs (backend/data/infra and frontend/UX) into one
 buildable architecture, greenfield (repo is currently empty).
@@ -36,6 +42,8 @@ buildable architecture, greenfield (repo is currently empty).
                                                                      ├─▶ Gemini (verdict/critique/chat, free tier)
                                                                      └─▶ Groq (multi-horizon forecast, free tier,
                                                                           separate quota — on-demand only)
+                                                                          ⚠ DORMANT: no API key yet; every
+                                                                          other arrow above works without it
 
  React PWA (installable on phone/desktop) ──HTTPS/JSON──▶ FastAPI backend ──reads only──▶ Postgres
 ```
@@ -128,7 +136,9 @@ This guarantees the AI never reasons over data the user can't also see.
   projection below reads.
 - `chat_messages` *(post-Phase-5, built)* — linear single-user chat history (`role`, `content`,
   `created_at`), append-only, no multi-conversation concept. Backs the grounded chat feature
-  below.
+  below. Gains a nullable `cited_sources` JSONB column *(2026-08-05 addition)* — populated on
+  assistant rows only, same shape as `ai_analyses.cited_sources`, so each reply's article
+  citations survive a page reload instead of being recomputed or lost.
 - `price_forecasts` *(pre-Phase-6 addition)* — one row per horizon per Groq forecast
   generation (`company_id`, `horizon_days`, `expected_low`, `expected_high`, `confidence`,
   `rationale`, `model`, `trigger`, `generated_at`), append-only like `ai_analyses`.
@@ -226,7 +236,45 @@ standalone in step 0 alongside the main verdict prompt.
 5. Surfaced in the UI as a "Get Second Opinion" button on the AI verdict banner (see wiki page
    layout below) — the user opts in per-ticker rather than it happening automatically.
 
-### Second AI provider (Groq) — multi-horizon buy/sell forecast
+### Second AI provider (Groq) — multi-horizon buy/sell forecast *(built dormant — no key yet)*
+
+**Standby status (2026-08-05).** The user cannot currently sign in to Groq to obtain an API key.
+Rather than block the feature or leave a half-designed hole in the plan, it is built as
+**dormant infrastructure**: everything that doesn't need a live key ships now, and the feature
+activates the moment `GROQ_API_KEY` appears in the environment. The hard constraint is that a
+missing key must be a *non-event* for the rest of the app:
+
+- **Treated as an absent optional provider, not an error.** `settings.groq_api_key` is
+  `str | None = None`, exactly like `finnhub_api_key`/`alpha_vantage_api_key`/`gemini_api_key`
+  already are — the app boots, the scheduler starts, and every existing route behaves
+  identically whether or not the key exists. Nothing about Groq is on any startup path.
+- **Nothing scheduled ever touches it.** The forecast pass is on-demand-only by design (point 5
+  below), so there is no background job that could fail, retry, or pollute `job_runs` while the
+  key is missing. This is the main reason the standby costs nothing.
+- **A capability flag, not a mystery 500.** `groq_client` reports availability from the presence
+  of the key; `GET /status` gains a small `features` map (e.g. `{"forecast": false}`) so the
+  frontend can *disable* the "Generate Forecast" button with a plain "Groq API key not
+  configured" tooltip instead of offering an action that cannot work. If the endpoint is called
+  anyway, it returns a clear `503` with that same message — the same never-silent-failure
+  posture as quota exhaustion (FR-16), just a different cause.
+- **The migration ships anyway.** `ALTER TYPE providername ADD VALUE 'groq'` and the
+  `price_forecasts` table are created now: they're inert without a key (an unused enum value and
+  an empty table cost nothing), and deferring them is precisely how Phase 4's `gemini` enum bug
+  happened. Migrations round-trip regardless of key state.
+- **The test suite must not know the difference.** Groq tests mock the client like every other
+  provider's, plus one explicit test for the key-absent path (`503`, clear message, no
+  `provider_call_log` row written) so "works without a key" is asserted, not assumed.
+- **Honest deviation from this project's derisk-first habit.** Every other provider/prompt here
+  was validated live before code was written around it (Phase 0's Gemini prompt, `/stock/candle`,
+  `outputsize=full`, `/company-news`). Groq's client and prompt are being written *without* that
+  check because the key isn't obtainable — so `prompts/forecast_prompt_v1.md` and the response
+  parsing are **unvalidated assumptions until the deferred derisk run happens** (point 6 below).
+  Expect the first real run to need prompt/parsing adjustment; that's the price of building it
+  out of order, and it's acceptable only because nothing else depends on this feature.
+
+The design below is unchanged from the original plan — it's what gets activated, not rewritten,
+once a key exists.
+
 A second, fully independent free-tier LLM (**Groq**, Llama free tier — fast, generous free
 quota) added specifically to go deeper than the single-target Gemini verdict: for a given
 ticker, produce an **expected low/high price band at each of 30/60/90/180/360 days**, rather
@@ -254,10 +302,17 @@ verdict/critique pipeline's Gemini budget.
    never overwritten), same philosophy as `ai_analyses`.
 5. **On-demand only, watchlist-tickers only** — same quota-protection gating as the critique
    pass (never scheduled, never available for lookup-tier tickers), surfaced as a "Generate
-   Forecast" button on the wiki page rendering a per-horizon low/high panel.
-6. Should be derisked standalone first (same habit as Phase 0/Gemini): confirm with a small
-   script against a real ticker that Groq returns real varying numbers per horizon before any
-   backend code is built assuming it works.
+   Forecast" button on the wiki page rendering a per-horizon low/high panel. While the key is
+   missing, that button renders disabled with the "not configured" tooltip rather than being
+   hidden — the feature is visibly on standby, not silently absent.
+6. **Derisk standalone — deferred, not skipped.** The Phase 0/Gemini habit still applies: a
+   small script (`scripts/test_groq_prompt.py`, mirroring `scripts/test_gemini_prompt.py`)
+   against a real wiki fixture, confirming Groq returns real, sensibly-varying low/high numbers
+   per horizon rather than a refusal or five copies of the same band. **This cannot run until a
+   key exists**, so it becomes the *first* task of activation rather than a prerequisite of
+   construction — the one place where the standby genuinely inverts this project's normal
+   ordering. The script ships now so activation is a single command; do not treat the forecast
+   feature as working until it has been run and its output reviewed.
 7. **Future connection, not required now**: once this exists, the portfolio income projection
    below could optionally blend Groq's horizon-matched high/low into its expected-profit math
    instead of relying solely on Gemini's single price target — intentionally deferred so the
@@ -277,6 +332,40 @@ Chat runs on its own lowest-priority slice of the Gemini budget
 watchlist analyses, on-demand verdicts, or critiques. Note the interaction with the benchmark
 design below: grounding on "every tracked company" is precisely why a benchmark ticker needs to
 be excluded from the tracked set rather than just promoted.
+
+#### Source citations per reply (user request, 2026-08-05)
+Every chat answer should show **which articles it drew on**, so a claim in the chat panel is
+checkable the same way a verdict's `cited_sources` chips already are. This is the natural
+completion of the grounding guarantee: grounding currently promises the AI *could only* have used
+visible data; citations show *which* visible data it actually used, per answer.
+
+- **The model never supplies the URL.** This is the whole design decision. Articles are already in
+  the prompt via each company's `recent_news` (headline/summary/source/published_at/sentiment/url,
+  6 most recent per company). Each one is stamped with a short **reference id** (`[N1]`, `[N2]`, …)
+  when the prompt is assembled; the model cites those ids, and `chat_service` resolves each id back
+  to the real `news_articles` row server-side. A model-authored URL is exactly the kind of thing an
+  LLM invents convincingly — plausible domain, plausible slug, 404. Resolving ids server-side makes
+  a fabricated citation *structurally impossible* rather than merely discouraged: an id that isn't
+  in the map is dropped and logged, never rendered as a link.
+- **Not every claim comes from an article.** Prices, computed technicals, AI verdicts, and the
+  user's own position are also grounding data, and a reply about "you're up 12% since your cost
+  basis" has no article behind it. So citations follow the verdict pipeline's existing shape —
+  typed entries (`news|price|verdict|metric|position`), with `news` being the only type that
+  carries a resolved URL. Forcing everything into "article" would just teach the model to
+  mis-attribute price facts to whatever headline was nearby.
+- **Same call, one extra output field** — `chat_prompt_v2.md` (new file, v1 kept per NFR-5) returns
+  `{reply, cited_sources[]}` instead of `{reply}`. No second Gemini call, so the chat budget slice
+  is unaffected; this is close to free.
+- **Persisted, not recomputed.** `chat_messages` gains a nullable `cited_sources` JSONB column
+  (assistant rows only), mirroring `ai_analyses.cited_sources`, so reopening `/chat` shows the same
+  chips it showed originally rather than losing them on reload.
+- **An empty citation list is a legitimate answer, not a bug.** The grounding refusal path ("I can
+  only discuss X, Y, Z") has nothing to cite, and free-tier news coverage is genuinely patchy
+  (Finnhub withholds `/company-news`; the Alpha Vantage `NEWS_SENTIMENT` fallback doesn't cover
+  every ticker), so some tracked companies have zero articles. The rule is that a reply must cite
+  what it used and must not manufacture an article when the answer came from price/verdict data —
+  rendered honestly in the UI as "based on price and verdict data — no articles available for this
+  company" rather than an empty chip row that looks broken.
 
 ### Portfolio income projection
 The user's existing `holdings` (shares + cost basis, one row per company — not tax lots) plus the
@@ -326,6 +415,10 @@ Two cheap additions using data the app already collects, no new tables or provid
   provider from `provider_call_log` on every check — expose that same computation as
   `GET /status/budget` (used-today vs. configured limit for Finnhub/Alpha Vantage/Gemini/Groq)
   so quota exhaustion is visible in Settings *before* a request gets rejected, not only after.
+  Providers with no API key configured (Groq today) report an explicit **"not configured"** state
+  rather than a 0-of-N usage bar — a zero bar reads as "plenty of quota left" when the truth is
+  "this provider can't be called at all", which is exactly the kind of silent misreport NFR-4
+  exists to prevent.
 - **Verdict-change diff**: `ai_analyses` is already append-only, one row per generation — a
   small function comparing the latest row to the immediately-preceding one for the same
   company (verdict changed? confidence delta? price-target deltas? hold-period changed?) turns
@@ -550,7 +643,11 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
    for the concrete task list. Built cheapest/lowest-risk first: ticker directory (no AI, no
    quota risk) → income projection (pure computation over existing data) → Groq forecast
    (new provider, new prompt, highest complexity) — same ordering habit as every prior
-   multi-feature addition in this project.
+   multi-feature addition in this project. **The Groq step ships dormant** (no API key
+   obtainable as of 2026-08-05): its infrastructure is built and merged, the feature stays
+   switched off behind the missing key, and the addition counts as complete without it being
+   live. Activation — drop the key in `.env`, run the deferred derisk script, verify — is
+   tracked separately so it never blocks Phase 6.
 5.6. **Observability, data retention, fundamentals, alerts, backtest-vs-benchmark** — a second
    round of user-requested additions, also sequenced cheapest-first: budget dashboard +
    verdict-change diff (pure UI over existing data) → `price_bars` retention → alerts in-app
@@ -558,6 +655,11 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
    like step 0's Gemini derisking) → alerts' Web Push extension (deferred until step 7's
    service worker exists). See the subsections above and spec.md's "Post-Phase-5 Addition #3"
    for full detail.
+5.7. **Chat source citations** — each chat reply shows the articles it drew on (see "Source
+   citations per reply" above). Small and self-contained: one new prompt version, one nullable
+   column, one migration, and a chip row in the chat UI. Deliberately **independent of 5.5 and
+   5.6** — it touches only `chat_service`/`chat_messages`/`ChatPage`, so it can be built before,
+   after, or between them without reordering anything. See spec.md's "Post-Phase-5 Addition #4".
 6. **Charts**: lightweight-charts price panel + indicators, Recharts fundamentals/sentiment/
    allocation. Verify visually against real data for a few tickers.
 7. **PWA + responsive polish**: manifest/service worker, mobile layout, install flow. Verify by
@@ -593,14 +695,42 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
   later" — scheduled watchlist analyses are prioritized so this mainly affects ad-hoc lookups.
 - Neon/Supabase free storage caps are unlikely to bind soon at this scale, but a price-bar
   retention/pruning policy is cheap insurance worth building in from day one.
+- **No Groq API key is obtainable right now (2026-08-05), so the forecast feature ships
+  unvalidated.** Its client, prompt, and response parsing are written without the live derisk run
+  every other integration in this project got first — meaning `forecast_prompt_v1.md` and the
+  JSON parsing around it are assumptions, not verified behavior, and the first real call may well
+  need adjustment. Mitigated by scope, not by cleverness: the feature is on-demand-only and
+  key-gated, so while it's dormant it cannot break, slow, or degrade anything the app already
+  does; and the deferred derisk script is written now so activation starts with verification
+  rather than with hope. The residual risk is wasted work if Groq turns out to be unsuitable —
+  accepted deliberately, since the alternative is leaving the whole addition unbuilt.
+- **A key-gated feature can rot quietly.** Because nothing exercises Groq while the key is
+  missing, its client could drift out of step with the shared provider interface (or with Groq's
+  own API) without any failing test noticing — the standby's one real cost. Mitigated by holding
+  Groq to exactly the same mocked-provider test coverage as every other client, so interface
+  drift breaks the suite even with no key present.
 - Groq's free-tier model lineup drifts/deprecates over time, the same class of risk already
   seen with Gemini model aliasing — mitigated the same way (a config knob, not a hardcoded
-  model id, and the exact model stamped into each `price_forecasts` row).
+  model id, and the exact model stamped into each `price_forecasts` row). Sharper here than for
+  Gemini: whatever model id gets written into config today is picked from documentation rather
+  than a live call, so it should be re-checked as part of activation, not trusted.
 - The multi-horizon forecast is a **second independently-reasoned opinion, not a validated
   forecasting model** — like the Gemini verdict, its 180/360-day numbers in particular are
   heuristic synthesis with no backtesting behind them yet. Treat it the same way the existing
   "AI's investment judgment is unproven" risk (below) treats the verdict: a research input, not
   a trusted number, until real elapsed time lets it be checked against actual prices.
+- **A chat citation the user can click is a claim the app is making on its own behalf** — if the
+  model authored the URL, that claim can be a convincing fabrication (real-looking domain, dead
+  link). Mitigated structurally, not by prompt wording: the model cites prompt-assigned reference
+  ids and the backend resolves them against the `news_articles` rows it actually sent, dropping
+  unrecognized ids. Worth stating as a standing rule for any future feature that renders
+  model-produced links.
+- **Chat citations are only as good as free-tier news coverage.** Finnhub's free tier withholds
+  `/company-news` and the Alpha Vantage `NEWS_SENTIMENT` fallback doesn't cover every ticker, so
+  some tracked companies have no articles at all and their answers will legitimately cite price or
+  verdict data instead. Not a defect to engineer around — but it does mean "show me the articles"
+  will sometimes honestly answer "there aren't any for this company", and the UI has to say that
+  plainly rather than looking empty or broken.
 - Fundamentals ingestion competes for Alpha Vantage's already-small daily budget (also used for
   price fallback, news fallback, and historical backfill) — mitigated by making it deliberately
   low-frequency (promote-time + monthly, never the main refresh cadence), but worth watching if
