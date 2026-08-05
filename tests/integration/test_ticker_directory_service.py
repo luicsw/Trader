@@ -20,6 +20,18 @@ def _count(db):
     return db.scalar(select(func.count()).select_from(TickerDirectory))
 
 
+def _job_runs(db, status):
+    # job_runs is append-only observability the conftest deliberately does not clear, and a real
+    # refresh_ticker_directory row already exists in the dev DB (from the feature's live bulk
+    # pull). So assert on the *delta* this call adds, not an absolute count -- robust regardless
+    # of pre-existing rows, and won't go flaky the next time the job is run for real.
+    return db.scalar(
+        select(func.count())
+        .select_from(JobRun)
+        .where(JobRun.job_name == "refresh_ticker_directory", JobRun.status == status)
+    )
+
+
 @pytest.fixture(autouse=True)
 def _configure_key(monkeypatch):
     monkeypatch.setattr(settings, "finnhub_api_key", "finnhub-key")
@@ -87,6 +99,7 @@ def test_search_respects_limit(db_session):
 
 @respx.mock
 def test_refresh_directory_populates_and_is_idempotent(db_session):
+    success_before = _job_runs(db_session, JobStatus.success)
     respx.get(LISTING_URL).mock(
         return_value=httpx.Response(
             200,
@@ -112,11 +125,7 @@ def test_refresh_directory_populates_and_is_idempotent(db_session):
     # from actual app use, so a global count would collide (the project's recurring
     # test-isolation bug -- same remedy as the ai_analyses precedent, scope don't broaden).
     assert db_session.scalar(select(func.count()).select_from(ProviderCallLog)) == 1
-    assert db_session.scalar(
-        select(func.count())
-        .select_from(JobRun)
-        .where(JobRun.job_name == "refresh_ticker_directory", JobRun.status == JobStatus.success)
-    ) == 1
+    assert _job_runs(db_session, JobStatus.success) == success_before + 1
 
     # Second pull with a changed name updates in place rather than duplicating (idempotent).
     respx.get(LISTING_URL).mock(
@@ -133,21 +142,19 @@ def test_refresh_directory_populates_and_is_idempotent(db_session):
 
 def test_refresh_directory_skips_without_key(db_session, monkeypatch):
     monkeypatch.setattr(settings, "finnhub_api_key", None)
+    skipped_before = _job_runs(db_session, JobStatus.skipped)
 
     result = ticker_directory_service.refresh_directory(db_session)
 
     assert result == {"status": "skipped", "upserted": 0}
     assert _count(db_session) == 0
     assert db_session.scalar(select(func.count()).select_from(ProviderCallLog)) == 0
-    assert db_session.scalar(
-        select(func.count())
-        .select_from(JobRun)
-        .where(JobRun.job_name == "refresh_ticker_directory", JobRun.status == JobStatus.skipped)
-    ) == 1
+    assert _job_runs(db_session, JobStatus.skipped) == skipped_before + 1
 
 
 @respx.mock
 def test_refresh_directory_failure_logs_and_does_not_raise(db_session):
+    failure_before = _job_runs(db_session, JobStatus.failure)
     respx.get(LISTING_URL).mock(return_value=httpx.Response(500))
 
     result = ticker_directory_service.refresh_directory(db_session)
@@ -156,8 +163,4 @@ def test_refresh_directory_failure_logs_and_does_not_raise(db_session):
     assert _count(db_session) == 0
     # A failed call is still logged (it consumed a slot) and surfaced in job_runs (NFR-4).
     assert db_session.scalar(select(func.count()).select_from(ProviderCallLog)) == 1
-    assert db_session.scalar(
-        select(func.count())
-        .select_from(JobRun)
-        .where(JobRun.job_name == "refresh_ticker_directory", JobRun.status == JobStatus.failure)
-    ) == 1
+    assert _job_runs(db_session, JobStatus.failure) == failure_before + 1

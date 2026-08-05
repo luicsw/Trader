@@ -2,11 +2,11 @@
 
 **Status:** Phase 0 through Phase 5 functionally complete, plus "Post-Phase-5 Addition #1"
 (categories, holdings, live chart, chat) complete and the token-efficiency pass complete.
-**"Post-Phase-5 Addition #2" is in progress: its first sub-feature — ticker directory /
-autocomplete — is ✅ DONE (2026-08-05);** portfolio income projections and the (dormant)
-second-LLM Groq forecast are still not started. "Post-Phase-5 Addition #3" (observability, data
+**"Post-Phase-5 Addition #2" is in progress: its first two sub-features — ticker directory /
+autocomplete and portfolio income projection — are ✅ DONE (2026-08-05);** only the (dormant)
+second-LLM Groq forecast remains. "Post-Phase-5 Addition #3" (observability, data
 retention, alerts, backtest vs. benchmark, fundamentals ingestion) and "Post-Phase-5 Addition #4"
-(chat source citations) specced but not started. Phase 6 not started · **Suite: 229/229 green,
+(chat source citations) specced but not started. Phase 6 not started · **Suite: 241/241 green,
 all 10 migrations round-trip** (migration `0010` = `ticker_directory`) · **Last updated:**
 2026-08-05
 (Phase 5's UI and the new Add-Holding combobox have not been visually/interactively verified in a
@@ -445,7 +445,7 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `POST /companies/{ticker}/live-quote` *(post-Phase-5)* | One near-live price poll, aggregated into a `"5m"` bar | shared credential | Called by the frontend only while a company page is open, ~every 20s |
 | `GET /chat/messages` *(post-Phase-5; response extended — Addition #4)* | Full chat history, each assistant message carrying its `cited_sources` (FR-49) | shared credential | Backs `/chat`; citations are read from the stored column, not recomputed |
 | `POST /chat` *(post-Phase-5; response extended — Addition #4)* | Send a chat message, get a grounded AI reply **plus the sources it drew on** (FR-47) | shared credential | Grounded to tracked companies only (user decision); lowest Gemini budget priority; citations add no extra AI call (FR-51) |
-| `GET /portfolio/projected-income?tickers=&horizon=` *(planned — Post-Phase-5 Addition #2)* | Expected profit at 30/60/90-day horizons, whole portfolio / single stock / selected subset (FR-27–29) | shared credential | Pure computation over existing `holdings` + latest `ai_analyses`; no new AI call. Both params are optional narrowing filters — bare call returns all holdings × all three horizons (FR-29) |
+| `GET /portfolio/projected-income?tickers=&horizon=` *(built — Post-Phase-5 Addition #2)* | Expected profit at 30/60/90-day horizons, whole portfolio / single stock / selected subset (FR-27–29) | shared credential | Pure computation over existing `holdings` + latest `ai_analyses`; no new AI call. Both params are optional narrowing filters — bare call returns all holdings × all three horizons (FR-29) |
 | `POST /companies/{ticker}/forecast` *(planned — Post-Phase-5 Addition #2; **dormant**)* | On-demand multi-horizon (30/60/90/180/360d) high/low forecast via Groq (FR-30–32) | shared credential | Watchlist-only, on-demand-only, mirrors `/critique`'s gating; own independent Groq budget. **With no Groq key: `503` "Groq API key not configured"** (FR-33a) — deliberately distinct from the `400` a lookup-tier ticker gets and from the quota-exhaustion response, so the three causes are never conflated |
 | `GET /companies/{ticker}/forecasts` *(planned — Post-Phase-5 Addition #2)* | Latest + historical forecast rows | shared credential | Backs a new wiki-page forecast panel. Works with no Groq key — returns an empty list, since reading history needs no provider (FR-33a) |
 | `GET /tickers/search?q=&limit=` *(built — Post-Phase-5 Addition #2)* | Local-only ticker/name autocomplete for the Add Holding form (FR-34–35) | shared credential | No live provider call; distinct from `/companies/search` (which proxies Finnhub live) |
@@ -918,18 +918,31 @@ lowest-risk first, each step not depending on the next.
     session, so the combobox's actual rendering/dropdown/keyboard behavior is confirmed only by
     type-check + build, not by clicking it. Open `/portfolio` yourself to confirm the dropdown.
 
-- [ ] **Portfolio income projection** (build second — pure computation, no new provider)
-  - [ ] `services/portfolio_projection_service.py::compute_projected_income(holdings,
-    horizon_days)` — eligibility + expected-profit math (FR-27, FR-28)
-  - [ ] `GET /portfolio/projected-income?horizon=&tickers=` (FR-29)
-  - [ ] Frontend: `/portfolio` gets a 30/60/90-day projection panel — toggle between all
-    holdings, one stock, or a multi-select subset; ineligible projections rendered with their
-    reason string (never hidden or zeroed), matching the existing honest-null convention used
-    for price targets elsewhere
-  - **Verify:** unit tests for the eligibility/bucketing logic (hold-period-vs-horizon, missing
-    target, missing analysis, each producing the correct reason string); integration test
-    against seeded holdings + analyses; live check against real holdings, hand-computing
-    expected values to compare.
+- [x] **Portfolio income projection** (build second — pure computation, no new provider) ✅ DONE (2026-08-05)
+  - [x] `services/portfolio_projection_service.py::compute_projected_income(db, tickers, horizons)`
+    — eligibility + expected-profit math (FR-27, FR-28). Latest analysis per company via one
+    `DISTINCT ON` query (same pattern as `chat_service._latest_verdicts`). Reason strings:
+    `"not yet analyzed"` / `"no AI sell target"` / `"AI suggests holding longer than this horizon"`.
+    **Scope decision:** a `sell` verdict carries a null `hold_period_days.min` (schema) — treated
+    as reachable within any horizon (min=0), since "sell now" is by definition reachable, rather
+    than dropping it for a null min. An expected *loss* (sell target below cost basis) is shown
+    honestly as a negative number, not hidden.
+  - [x] `GET /portfolio/projected-income?horizon=&tickers=` (FR-29) on a new `portfolio.py`
+    router — both params optional narrowing filters; bare call returns every holding × 30/60/90.
+  - [x] Frontend: `ProjectionPanel` on `/portfolio` — a per-holding × 30/60/90 table with
+    include/exclude chips; ineligible cells render the reason string (never hidden or zeroed).
+    Totals are summed client-side from the server's per-holding `expected_profit` as the chips
+    toggle (instant, no re-fetch); the server still owns each holding's value and eligibility.
+  - **Verified (2026-08-05):** unit/integration tests cover every branch — eligible profit,
+    no-analysis, no-sell-target, hold-period-vs-horizon bucketing (ineligible at 30d → eligible
+    at 60d), sell-verdict null-hold-period eligibility, latest-analysis selection, aggregate sums
+    only eligible, `tickers` filter, `horizon` filter. Backend suite **241/241** green (+12:
+    9 service, 3 router). **Live check against the real holdings**, hand-verified:
+    NVDA (232.28−124.94)×1.18 = **126.66**, MSFT (525.0−498.4)×0.2985955 = **7.94**, total
+    **134.60** — matches to the cent. Frontend `tsc -b` clean, `oxlint` 0 errors (2 known
+    `AuthContext.tsx` warnings only).
+  - **Not verified — standing caveat:** no interactive browser this session, so the panel's
+    rendering/chip-toggling is confirmed by type-check + build, not by clicking it.
 
 - [ ] **Multi-horizon forecast — second LLM (Groq)** (build third — new provider, new prompt,
   highest complexity) — **SHIPS DORMANT: no API key obtainable as of 2026-08-05.**

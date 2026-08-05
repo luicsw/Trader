@@ -69,6 +69,28 @@ export interface Holding {
   unrealized_gain_pct: number | null
 }
 
+export interface ProjectionHolding {
+  ticker: string
+  name: string | null
+  shares: number
+  cost_basis_per_share: number
+  sell_at_or_above: number | null
+  expected_profit: number | null
+  eligible: boolean
+  reason: string | null
+}
+
+export interface HorizonProjection {
+  horizon_days: number
+  total_expected_profit: number
+  eligible_count: number
+  holdings: ProjectionHolding[]
+}
+
+export interface ProjectedIncome {
+  horizons: HorizonProjection[]
+}
+
 export interface Wiki {
   ticker: string
   name: string | null

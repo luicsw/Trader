@@ -8,6 +8,7 @@ from app.api.routers import (
     health,
     holdings,
     outcomes,
+    portfolio,
     price_history,
     refresh,
     search,
@@ -31,6 +32,7 @@ app.include_router(health.router)
 app.include_router(wiki.router)
 app.include_router(watchlist.router)
 app.include_router(holdings.router)
+app.include_router(portfolio.router)
 app.include_router(price_history.router)
 app.include_router(chat.router)
 app.include_router(refresh.router)

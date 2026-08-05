@@ -7,6 +7,7 @@ import type {
   Critique,
   Holding,
   PriceBar,
+  ProjectedIncome,
   PromoteResult,
   SearchResult,
   TickerSuggestion,
@@ -96,6 +97,8 @@ export const api = {
     apiFetch<{ ticker: string; removed: boolean }>(`/holdings/${encodeURIComponent(ticker)}`, {
       method: 'DELETE',
     }),
+
+  getProjectedIncome: () => apiFetch<ProjectedIncome>('/portfolio/projected-income'),
 
   getPriceHistory: (ticker: string, interval: string, limit: number) =>
     apiFetch<PriceBar[]>(

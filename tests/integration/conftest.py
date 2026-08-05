@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import ChatMessage, Holding, ProviderCallLog, Watchlist
+from app.db.models import ChatMessage, Holding, ProviderCallLog, TickerDirectory, Watchlist
 from app.db.session import engine, get_db
 from app.main import app
 
@@ -40,6 +40,12 @@ def db_session():
     # transaction, which is rolled back below, so real data is untouched once the test ends.
     session.execute(delete(ChatMessage))
     session.execute(delete(Holding))
+    # ticker_directory_service.search()/refresh_directory() are global reads/writes over the
+    # whole symbol universe -- and the dev DB now holds a real ~31k-row directory from an actual
+    # bulk pull, so tests that seed a few rows and assert on counts or search results collide
+    # with it. Same table-neutralization remedy as ChatMessage/Holding/Watchlist above (the
+    # project's standing lesson: a "reads everything" table eventually meets real dev data).
+    session.execute(delete(TickerDirectory))
     try:
         yield session
     finally:

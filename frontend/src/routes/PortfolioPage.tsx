@@ -4,6 +4,7 @@ import { useHoldings, useRemoveHolding, useUpsertHolding } from '../api/hooks'
 import { ApiError } from '../api/client'
 import { Skeleton } from '../components/Skeleton'
 import { TickerCombobox } from '../components/TickerCombobox'
+import { ProjectionPanel } from '../components/ProjectionPanel'
 
 // Personal holdings tracking (Post-Phase-5 addition) -- deliberately scoped to shares + cost
 // basis only, per the user's explicit decision: no tax lots, no realized-gains accounting, no
@@ -97,6 +98,8 @@ export function PortfolioPage() {
           </div>
         </div>
       )}
+
+      <ProjectionPanel />
 
       <form
         onSubmit={handleSubmit}

@@ -11,6 +11,7 @@ export const queryKeys = {
   tickerSearch: (query: string) => ['ticker-search', query] as const,
   analyses: (ticker: string) => ['analyses', ticker.toUpperCase()] as const,
   holdings: () => ['holdings'] as const,
+  projectedIncome: () => ['projected-income'] as const,
   priceHistory: (ticker: string, interval: string) => ['price-history', ticker.toUpperCase(), interval] as const,
   chatMessages: () => ['chat-messages'] as const,
 }
@@ -108,12 +109,17 @@ export function useHoldings() {
   return useQuery({ queryKey: queryKeys.holdings(), queryFn: api.getHoldings })
 }
 
+export function useProjectedIncome() {
+  return useQuery({ queryKey: queryKeys.projectedIncome(), queryFn: api.getProjectedIncome })
+}
+
 export function useUpsertHolding() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ ticker, input }: { ticker: string; input: HoldingInput }) => api.upsertHolding(ticker, input),
     onSuccess: (_data, { ticker }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.holdings() })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projectedIncome() })
       queryClient.invalidateQueries({ queryKey: queryKeys.watchlist() })
       queryClient.invalidateQueries({ queryKey: queryKeys.wiki(ticker) })
     },
@@ -126,6 +132,7 @@ export function useRemoveHolding() {
     mutationFn: (ticker: string) => api.removeHolding(ticker),
     onSuccess: (_data, ticker) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.holdings() })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projectedIncome() })
       queryClient.invalidateQueries({ queryKey: queryKeys.wiki(ticker) })
     },
   })
