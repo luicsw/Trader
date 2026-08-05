@@ -102,16 +102,30 @@ def test_hold_period_longer_than_horizon_buckets_correctly(db_session):
     assert row60["expected_profit"] == (150.0 - 100.0) * 2  # 100
 
 
-def test_sell_verdict_with_null_hold_period_is_eligible(db_session):
-    # A sell verdict carries a null hold_period (schema) -- "sell now", target reachable within
-    # any horizon, so it must be eligible, not silently dropped for a null min.
+def test_sell_verdict_is_excluded_with_sell_now_reason(db_session):
+    # A sell verdict says "get out now", not "wait for the upside target" -- so it's excluded
+    # from this target-based projection, with a reason pointing at the current gain/loss the page
+    # already shows, rather than a hopeful gain at a resistance target the verdict contradicts.
     company = _company(db_session, "ZPE")
     _holding(db_session, company, shares=3, cost=50.0)
-    _analysis(db_session, company, verdict=Verdict.sell, sell=40.0, min_hold=None)
+    _analysis(db_session, company, verdict=Verdict.sell, sell=60.0, min_hold=None)
 
     row = _row(pps.compute_projected_income(db_session, horizons=(30,)), 30, "ZPE")
+    assert row["eligible"] is False
+    assert row["expected_profit"] is None
+    assert row["reason"] == "AI recommends selling now — see current gain/loss"
+
+
+def test_expected_loss_on_buy_hold_is_shown_as_negative_not_hidden(db_session):
+    # Sell target below cost basis on a hold verdict: eligible, honest negative "profit" (you'd
+    # lock in a loss even if the target is hit) -- never zeroed or dropped.
+    company = _company(db_session, "ZPL")
+    _holding(db_session, company, shares=2, cost=100.0)
+    _analysis(db_session, company, verdict=Verdict.hold, sell=90.0, min_hold=10)
+
+    row = _row(pps.compute_projected_income(db_session, horizons=(30,)), 30, "ZPL")
     assert row["eligible"] is True
-    assert row["expected_profit"] == (40.0 - 50.0) * 3  # -30, an expected loss shown honestly
+    assert row["expected_profit"] == (90.0 - 100.0) * 2  # -20
 
 
 def test_uses_latest_analysis_not_an_older_one(db_session):

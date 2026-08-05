@@ -3,21 +3,27 @@ sold within 30/60/90 days?" for the whole portfolio, one stock, or an arbitrary 
 computation over data already collected: the user's `holdings` plus the latest `ai_analyses`
 row per company. No new AI call and no provider call. See spec.md FR-27 to FR-29.
 
-Eligibility (FR-28): a holding contributes to horizon H only if its latest analysis has a
-non-null `sell_at_or_above` AND the AI's own suggested `hold_period_days.min` is <= H -- i.e.
-the AI itself thinks the sell target is reachable within that window. Otherwise the projection
-is null with an explicit reason string, never silently omitted or zeroed.
+This panel means exactly one thing: "expected profit if you keep holding and sell when the AI's
+upside target is reached within horizon H." Eligibility (FR-28): a holding contributes to
+horizon H only if its latest verdict is buy/hold with a non-null `sell_at_or_above` AND the AI's
+own suggested `hold_period_days.min` is <= H. A `sell` verdict does not fit that premise -- it
+says "get out now", not "wait for this upside target" (which the prompt anchors near resistance),
+so projecting profit there would show a hopeful gain that contradicts the advice; sell verdicts
+are excluded with a reason pointing at the holding's current gain/loss, already shown on the
+page. Any other ineligible case (no analysis, no target, target too far out) is null with its own
+explicit reason, never silently omitted or zeroed.
 """
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AiAnalysis, Company, Holding
+from app.db.models import AiAnalysis, Company, Holding, Verdict
 
 DEFAULT_HORIZONS = (30, 60, 90)
 
 _REASON_NO_ANALYSIS = "not yet analyzed"
 _REASON_NO_TARGET = "no AI sell target"
 _REASON_HOLD_LONGER = "AI suggests holding longer than this horizon"
+_REASON_SELL_NOW = "AI recommends selling now — see current gain/loss"
 
 
 def compute_projected_income(
@@ -89,13 +95,21 @@ def _project_holding(holding: Holding, analysis: AiAnalysis | None, horizon: int
 
     sell_target = (analysis.price_targets or {}).get("sell_at_or_above")
     row["sell_at_or_above"] = sell_target
+
+    # A `sell` verdict means "get out now", not "wait for this upside target" -- so projecting
+    # profit at sell_at_or_above (anchored near resistance by the verdict prompt) would show a
+    # hopeful gain that contradicts the advice. Exclude it; the honest "what would I get if I
+    # sold today" figure is the holding's unrealized gain/loss already shown on the page. This
+    # is also the only case where hold_period_days.min is null (schema), so keying on the verdict
+    # is clearer than inferring it from a null min.
+    if analysis.verdict == Verdict.sell:
+        row["reason"] = _REASON_SELL_NOW
+        return row
+
     if sell_target is None:
         row["reason"] = _REASON_NO_TARGET
         return row
 
-    # hold_period_days.min is null for sell verdicts (schema: hold period is null when the
-    # verdict is `sell`). A sell verdict is "sell now", so its target is reachable within any
-    # horizon -- treat a null min as 0 (eligible) rather than as an unmet constraint.
     min_hold = (analysis.hold_period_days or {}).get("min")
     if min_hold is not None and min_hold > horizon:
         row["reason"] = _REASON_HOLD_LONGER

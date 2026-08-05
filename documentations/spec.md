@@ -923,10 +923,15 @@ lowest-risk first, each step not depending on the next.
     — eligibility + expected-profit math (FR-27, FR-28). Latest analysis per company via one
     `DISTINCT ON` query (same pattern as `chat_service._latest_verdicts`). Reason strings:
     `"not yet analyzed"` / `"no AI sell target"` / `"AI suggests holding longer than this horizon"`.
-    **Scope decision:** a `sell` verdict carries a null `hold_period_days.min` (schema) — treated
-    as reachable within any horizon (min=0), since "sell now" is by definition reachable, rather
-    than dropping it for a null min. An expected *loss* (sell target below cost basis) is shown
-    honestly as a negative number, not hidden.
+    **Scope decision:** the panel means one thing — "profit if you keep holding and sell when the
+    AI's upside target is reached within H." A `sell` verdict doesn't fit that premise (it says
+    "get out now", and its `sell_at_or_above` is anchored near resistance per the verdict prompt),
+    so it's **excluded** with the reason `"AI recommends selling now — see current gain/loss"`
+    rather than projected at an upside target the verdict contradicts — the real "sell today"
+    figure is the holding's unrealized gain/loss already shown on the page. Keyed on
+    `verdict == sell` (also the only case with a null `hold_period_days.min`). An expected *loss*
+    on a buy/hold verdict (sell target below cost basis) is shown honestly as a negative number,
+    never hidden or zeroed.
   - [x] `GET /portfolio/projected-income?horizon=&tickers=` (FR-29) on a new `portfolio.py`
     router — both params optional narrowing filters; bare call returns every holding × 30/60/90.
   - [x] Frontend: `ProjectionPanel` on `/portfolio` — a per-holding × 30/60/90 table with
@@ -935,8 +940,8 @@ lowest-risk first, each step not depending on the next.
     toggle (instant, no re-fetch); the server still owns each holding's value and eligibility.
   - **Verified (2026-08-05):** unit/integration tests cover every branch — eligible profit,
     no-analysis, no-sell-target, hold-period-vs-horizon bucketing (ineligible at 30d → eligible
-    at 60d), sell-verdict null-hold-period eligibility, latest-analysis selection, aggregate sums
-    only eligible, `tickers` filter, `horizon` filter. Backend suite **241/241** green (+12:
+    at 60d), sell-verdict exclusion (sell-now reason), expected-loss-shown-as-negative,
+    latest-analysis selection, aggregate sums only eligible, `tickers` filter, `horizon` filter. Backend suite **241/241** green (+12:
     9 service, 3 router). **Live check against the real holdings**, hand-verified:
     NVDA (232.28−124.94)×1.18 = **126.66**, MSFT (525.0−498.4)×0.2985955 = **7.94**, total
     **134.60** — matches to the cent. Frontend `tsc -b` clean, `oxlint` 0 errors (2 known
