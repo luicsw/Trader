@@ -110,6 +110,13 @@ export interface SearchResult {
   type: string | null
 }
 
+export interface TickerSuggestion {
+  symbol: string
+  name: string | null
+  exchange: string | null
+  security_type: string | null
+}
+
 export interface PriceTargets {
   buy_at_or_below: number | null
   sell_at_or_above: number | null

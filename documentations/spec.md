@@ -1,12 +1,16 @@
 # Personal Investment Research App — Spec & Task Breakdown
 
 **Status:** Phase 0 through Phase 5 functionally complete, plus "Post-Phase-5 Addition #1"
-(categories, holdings, live chart, chat) complete. "Post-Phase-5 Addition #2" (portfolio income
-projections, second-LLM forecasts, ticker autocomplete) and "Post-Phase-5 Addition #3"
-(observability, data retention, alerts, backtest vs. benchmark, fundamentals ingestion) and
-"Post-Phase-5 Addition #4" (chat source citations) all specced but not started. Phase 6 not started · **Suite: 210/210 green, all 9 migrations
-round-trip** (see "Verification run — 2026-08-04") · **Last updated:** 2026-08-05
-(Phase 5's UI has not been visually/interactively verified in a real browser — see its section below.)
+(categories, holdings, live chart, chat) complete and the token-efficiency pass complete.
+**"Post-Phase-5 Addition #2" is in progress: its first sub-feature — ticker directory /
+autocomplete — is ✅ DONE (2026-08-05);** portfolio income projections and the (dormant)
+second-LLM Groq forecast are still not started. "Post-Phase-5 Addition #3" (observability, data
+retention, alerts, backtest vs. benchmark, fundamentals ingestion) and "Post-Phase-5 Addition #4"
+(chat source citations) specced but not started. Phase 6 not started · **Suite: 229/229 green,
+all 10 migrations round-trip** (migration `0010` = `ticker_directory`) · **Last updated:**
+2026-08-05
+(Phase 5's UI and the new Add-Holding combobox have not been visually/interactively verified in a
+real browser — see the relevant sections below.)
 **Two FR-21 routes are still unbuilt:** `/compare` (scheduled, Phase 6 T6.3) and `/settings`
 (never in any task list until Addition #3 — see that section).
 
@@ -361,6 +365,7 @@ Grouped by area. IDs are referenced from the task breakdown in §9.
 | NFR-7 *(planned)* | Web Push alert delivery (FR-44) is best-effort — browser/OS support varies (notably iOS Safari) — the in-app alerts feed (FR-43) SHALL remain the reliable channel regardless of push delivery success. |
 | NFR-8 *(planned)* | The backtest (FR-46) SHALL be presented as a simplified historical simulation, not a validated trading strategy — no fees/slippage modeling, single historical path, no claim about future performance. |
 | NFR-9 | **Optional providers degrade to absent, never to broken.** An unset provider API key SHALL leave every unrelated capability untouched: the app boots, the scheduler runs, migrations round-trip, and the full test suite passes with the key missing. Key-gated features SHALL announce their unavailability through a capability flag (FR-33a's `GET /status` `features` map) and refuse with a clear `503`, never a silent no-op or a generic 500. Keys already follow this shape in `app/config.py` (`str \| None = None` for Finnhub/Alpha Vantage/Gemini); `groq_api_key` is the first one whose *whole feature* is gated this way, and today the only one actually unset. |
+| NFR-10 | **Prompt payload discipline — every AI call site sends a purpose-built subset, never a whole page dict.** `wiki_service.assemble()` is shaped for the wiki *page* (logos, article URLs, rendered `wiki_sections` prose) and is the shared single-source-of-truth read path (FR-10), so trimming happens at each *call site*, never in `assemble()` itself. Three rules: (a) **no field may restate another in the same payload** — the rendered `overview`/`key_metrics`/`news_digest` sections duplicate structured fields that are already present, and sending both costs tokens to say the same thing twice; (b) free-text fields (company `description`, article `summary`) are **length-capped**, and any payload that scales with tracked-company count is capped and tunable via config (`settings.chat_*`), never unbounded; (c) prompt JSON uses **compact separators**, not `indent=2` — the model parses both identically. Rationale is budget, not elegance: `rate_limiter.allow()` counts **every** `provider_call_log` row regardless of status, so a call rejected for exceeding a token limit still consumes a slot from the same daily Gemini budget the user's own on-demand analyses draw on. An oversized prompt costs quota *and* returns nothing. |
 
 ---
 
@@ -407,7 +412,7 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `chat_messages` *(post-Phase-5 addition; `cited_sources` planned — Addition #4)* | role (user\|assistant), content, created_at, **cited_sources** (JSONB, nullable) | Append-only, linear, single-user — no multi-conversation concept. `cited_sources` is populated on assistant rows only, same shape as `ai_analyses.cited_sources`, resolved server-side from prompt reference ids (FR-48) so a stored URL is always a real `news_articles` URL |
 | `price_bars` interval `"5m"` *(post-Phase-5 addition)* | same columns as the `"1d"` rows above, one bucket per 5 minutes | Aggregated server-side from repeated `/quote` polls (Finnhub's free tier has no intraday candle endpoint) — not a new table, just a new `interval` value in the existing `price_bars` table |
 | `price_forecasts` *(planned — Post-Phase-5 Addition #2; table+migration ship dormant)* | company_id, horizon_days, expected_low, expected_high, confidence, rationale, model, trigger, generated_at | Append-only, one row per horizon per generation; INDEX `(company_id, horizon_days, generated_at DESC)`. `confidence` is **per-horizon**, sourced from the prompt's per-horizon field (FR-30) — not one value copied across five rows. **Created even with no Groq key** (FR-33a): an empty table is inert, and deferring the migration is how Phase 4's `gemini` enum bug happened. Stays empty until activation |
-| `ticker_directory` *(planned — Post-Phase-5 Addition #2)* | symbol, name, exchange, security_type, updated_at | UNIQUE `(symbol)`; bulk-refreshed weekly, backs local autocomplete (FR-34). Bulk source endpoint to be confirmed free-tier accessible first — Finnhub's symbol listing if free, Alpha Vantage `LISTING_STATUS` otherwise |
+| `ticker_directory` *(built — Post-Phase-5 Addition #2, migration `0010`)* | symbol, name, exchange, security_type, updated_at | UNIQUE `(symbol)`; bulk-refreshed weekly, backs local autocomplete (FR-34). Source confirmed free-tier: Finnhub `/stock/symbol?exchange=US` (302-redirects to a downloadable JSON of ~31k US symbols) — no Alpha Vantage fallback needed. Plain `ILIKE` search, no `pg_trgm` |
 | `alerts` *(planned — Post-Phase-5 Addition #3)* | company_id, alert_type (verdict_change\|sell_target_hit\|stop_loss_hit), message, triggered_at, acknowledged, acknowledged_at | Not append-only — `acknowledged` is a real state transition; "one open alert per `(company_id, alert_type)`" enforced in `alert_service`, not a DB constraint (FR-41–43) |
 | `push_subscriptions` *(planned, stretch — Post-Phase-5 Addition #3)* | endpoint, p256dh_key, auth_key, created_at | UNIQUE `(endpoint)`; only needed if the Web Push extension (FR-44) is built |
 
@@ -443,8 +448,8 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `GET /portfolio/projected-income?tickers=&horizon=` *(planned — Post-Phase-5 Addition #2)* | Expected profit at 30/60/90-day horizons, whole portfolio / single stock / selected subset (FR-27–29) | shared credential | Pure computation over existing `holdings` + latest `ai_analyses`; no new AI call. Both params are optional narrowing filters — bare call returns all holdings × all three horizons (FR-29) |
 | `POST /companies/{ticker}/forecast` *(planned — Post-Phase-5 Addition #2; **dormant**)* | On-demand multi-horizon (30/60/90/180/360d) high/low forecast via Groq (FR-30–32) | shared credential | Watchlist-only, on-demand-only, mirrors `/critique`'s gating; own independent Groq budget. **With no Groq key: `503` "Groq API key not configured"** (FR-33a) — deliberately distinct from the `400` a lookup-tier ticker gets and from the quota-exhaustion response, so the three causes are never conflated |
 | `GET /companies/{ticker}/forecasts` *(planned — Post-Phase-5 Addition #2)* | Latest + historical forecast rows | shared credential | Backs a new wiki-page forecast panel. Works with no Groq key — returns an empty list, since reading history needs no provider (FR-33a) |
-| `GET /tickers/search?q=&limit=` *(planned — Post-Phase-5 Addition #2)* | Local-only ticker/name autocomplete for the Add Holding form (FR-34–35) | shared credential | No live provider call; distinct from `/companies/search` (which proxies Finnhub live) |
-| `POST /internal/refresh-ticker-directory` *(planned — Post-Phase-5 Addition #2)* | Cron-triggered weekly bulk refresh of `ticker_directory` | shared credential | Same dual-trigger pattern as every other job (NFR-1); source endpoint pending the derisk check in §9 |
+| `GET /tickers/search?q=&limit=` *(built — Post-Phase-5 Addition #2)* | Local-only ticker/name autocomplete for the Add Holding form (FR-34–35) | shared credential | No live provider call; distinct from `/companies/search` (which proxies Finnhub live) |
+| `POST /internal/refresh-ticker-directory` *(built — Post-Phase-5 Addition #2)* | Cron-triggered weekly bulk refresh of `ticker_directory` from Finnhub `/stock/symbol` | shared credential | Same dual-trigger pattern as every other job (NFR-1) |
 | `POST /internal/prune-price-bars` *(planned — Post-Phase-5 Addition #3)* | Cron-triggered deletion of `"5m"` bars older than `price_bars_retention_days` (FR-38) | shared credential | Never touches `"1d"` rows; same dual-trigger pattern (NFR-1) |
 | `POST /internal/refresh-fundamentals` *(planned — Post-Phase-5 Addition #3)* | Cron-triggered monthly fundamentals refresh for watchlist companies (FR-39, FR-40) | shared credential | Alpha Vantage-sourced; deliberately low-frequency to protect its small daily budget |
 | `GET /alerts` *(planned — Post-Phase-5 Addition #3)* | Unacknowledged + recent alerts (FR-43) | shared credential | Backs the nav bell-icon feed |
@@ -870,8 +875,8 @@ Three features requested directly by the user before starting Phase 6 (charts). 
 sequenced by the same habit as every prior multi-feature addition in this project: cheapest and
 lowest-risk first, each step not depending on the next.
 
-- [ ] **Ticker directory / autocomplete** (build first — no AI, no quota risk)
-  - [ ] **Derisk the bulk symbol endpoint live, before writing ingestion code.** This project's
+- [x] **Ticker directory / autocomplete** (build first — no AI, no quota risk) ✅ DONE (2026-08-05)
+  - [x] **Derisk the bulk symbol endpoint live, before writing ingestion code.** This project's
     established habit, applied here because it was initially missed: Finnhub's free tier has
     already rejected two endpoints this plan assumed it had (`/stock/candle` in Addition #1,
     `/company-news` in Phase 4) and Alpha Vantage gated a third (`outputsize=full`,
@@ -879,20 +884,39 @@ lowest-risk first, each step not depending on the next.
     whether it returns a symbol array or an upsell message. **Fallback if gated:** Alpha
     Vantage's `LISTING_STATUS` (CSV of all active US symbols) — a once-weekly bulk pull is well
     within even AV's small daily budget, unlike anything on the refresh cadence.
-  - [ ] `ticker_directory` table + migration; `CREATE EXTENSION IF NOT EXISTS pg_trgm` in the
-    same migration if trigram search is used (Neon supports it, but it is not enabled by default)
-  - [ ] `services/ticker_directory_service.py::refresh_directory()` — bulk upsert from whichever
-    endpoint the derisk step confirmed
-  - [ ] `GET /tickers/search?q=&limit=` — ILIKE/trigram search against the local table only,
-    zero live provider calls (FR-34)
-  - [ ] `POST /internal/refresh-ticker-directory` + weekly APScheduler job, same dual-trigger
-    pattern as every other job (NFR-1)
-  - [ ] Frontend: type-ahead combobox on the "Add Holding" form; manual-entry fallback
-    preserved for symbols not yet in the directory (FR-35)
-  - **Verify:** directory populates from a real bulk pull; typing a partial name/ticker
-    in Add Holding returns matches with zero new provider rows in `provider_call_log`; an
-    obscure/newly-listed ticker absent from the directory can still be typed manually and
-    resolves via the existing lookup/promote path.
+    **Result: free-tier accessible, no fallback needed.** `/stock/symbol?exchange=US` responds
+    with a `302` redirect to a signed downloadable JSON file (not an upsell) — following it
+    (`curl -L` / httpx `follow_redirects`) yields **30,919 US symbols** with `symbol`,
+    `description` (name), `mic` (exchange), `type` (security type). The client's `list_symbols()`
+    is the one Finnhub call that needs `follow_redirects=True` and a longer timeout.
+  - [x] `ticker_directory` table + migration `0010`. **No `pg_trgm`**: plain prefix `ILIKE` is
+    exactly the wanted behavior when a single user types a ticker fragment, and 31k rows scan
+    trivially — the UNIQUE index on `symbol` already serves prefix matches, so the extension
+    would be speculative complexity. Round-trips (`downgrade 0010→0009 → upgrade head`) clean.
+    **Note:** Addition #4 (chat citations) had also pencilled in "migration 0010"; whichever
+    shipped first took the number — this did, so Addition #4's column becomes `0011`.
+  - [x] `services/ticker_directory_service.py::refresh_directory()` — chunked bulk `ON
+    CONFLICT(symbol)` upsert (deduped by symbol first, since one INSERT can't touch a conflict
+    target twice and the dump lists some symbols under two MICs). Rate-limited/circuit-broken
+    and logs a `job_runs` row on every path (ok/skipped/failed), never raises — same posture as
+    `refresh_service.refresh_entry`.
+  - [x] `GET /tickers/search?q=&limit=` — plain `ILIKE` search against the local table only,
+    zero live provider calls (FR-34); orders symbol-prefix matches first, then shorter symbols,
+    then alphabetical.
+  - [x] `POST /internal/refresh-ticker-directory` + weekly APScheduler job
+    (`ticker_directory_refresh_interval_seconds`, 7d), same dual-trigger pattern as every other
+    job (NFR-1).
+  - [x] Frontend: `TickerCombobox` type-ahead on the "Add Holding" form; manual entry preserved
+    for symbols not yet in the directory (whatever is typed IS the value, FR-35).
+  - **Verified (2026-08-05):** live bulk pull populated the dev DB with **30,919 symbols in one
+    provider call**; local search returned correct matches (`AAP`→Advance Auto Parts, name match
+    `nvidia`→NVDA) and **added zero `provider_call_log` rows** — the whole point of FR-34.
+    Backend suite **229/229** green (was 214; +15: 4 provider-unit, 8 service-integration,
+    3 router), migration `0010` round-trips. Frontend `tsc -b` + `vite build` clean, `oxlint` 0
+    errors (only the 2 known `AuthContext.tsx` fast-refresh warnings).
+  - **Not verified — same standing caveat as Phase 5/Addition #1:** no interactive browser this
+    session, so the combobox's actual rendering/dropdown/keyboard behavior is confirmed only by
+    type-check + build, not by clicking it. Open `/portfolio` yourself to confirm the dropdown.
 
 - [ ] **Portfolio income projection** (build second — pure computation, no new provider)
   - [ ] `services/portfolio_projection_service.py::compute_projected_income(holdings,
@@ -1108,6 +1132,58 @@ policy). Sequenced cheapest/lowest-risk-first, same habit as every prior additio
   green; new `/settings` route, budget dashboard, alerts feed, and backtest page visually
   confirmed in a real browser.
 
+### Token-efficiency pass — 2026-08-05 ✅ DONE
+Requested directly by the user: fix the prompt duplication and any other token waste, so that
+"simple and minor calls" can't eat the budget the user wants available for their own on-demand
+stock evaluations. Small, code-only, no new tables or endpoints. **214/214 tests pass** (210 + 4
+new).
+
+- **The duplication was in chat, not in the verdict path.** Worth recording because the first
+  guess was wrong: `ai_service.wiki_to_prompt_data()` already maps `assemble()` into a
+  purpose-built subset and never sends `sections.news_digest`, so verdict/critique prompts were
+  already lean. `chat_service._build_grounding_context()` was passing the **entire `assemble()`
+  dict per tracked company**, which carried three prose sections that restate structured fields
+  present in the same payload:
+  - `sections.news_digest` → the same headlines already in `recent_news`
+  - `sections.key_metrics` → `latest_price` / `market_cap` / `sector` / `price_summary`
+  - `sections.overview` → `name` / `exchange` / `sector` / `market_cap`
+- **Why chat specifically:** it is the only prompt whose size scales with how many companies the
+  user tracks, and it is rebuilt from scratch on *every message* — a once-daily verdict paying a
+  few hundred extra tokens is irrelevant; a per-message payload that grows with the watchlist is
+  not.
+- [x] `chat_service._slim_for_grounding()` — drops all `sections`, `logo_url`, `coverage_tier`,
+  and each article's `url` (citations resolve server-side from reference ids per FR-48, so the
+  model never needs a URL and shouldn't be handed one it could echo as if it had read the page);
+  caps `description` and article `summary` length. `wiki_service.assemble()` is deliberately
+  **unchanged** — it stays the shared read path (FR-10, NFR-10), and the slim payload is a strict
+  subset of what the user can see, so the grounding guarantee is untouched.
+- [x] Compact JSON separators instead of `indent=2` for the grounding blob (NFR-10c).
+- [x] **Fixed a real capability gap found in passing:** the chat prompt has instructed the model
+  since day one to ground comparisons in "each company's latest verdict", but `assemble()` — built
+  for a page whose verdict banner is fetched separately — never carried one, so that instruction
+  pointed at data that wasn't in the payload. `_latest_verdicts()` now supplies the latest
+  `ai_analyses` row per company in a single `DISTINCT ON` query (not N queries), and the prompt
+  tells the model to say so plainly when a company has never been analyzed rather than guessing.
+- [x] Sizes moved to config (`chat_news_articles_per_company`, `chat_article_summary_chars`,
+  `chat_description_chars`, `chat_max_tracked_companies`, `chat_max_history_messages`) rather than
+  hardcoded — it is a quality-vs-tokens tradeoff only the user can judge, same reasoning as the
+  budget fractions. Note `6` is the effective ceiling for articles-per-company, since
+  `ingest_service.recent_news()` reads 6.
+- **Measured against the real dev database** (6 tracked companies, 30 articles): grounding payload
+  **33,600 → 17,035 chars (~8,400 → ~4,260 tokens), a 49% cut**, with verdicts now included rather
+  than missing. Per-field breakdown after the pass: `recent_news` 11,501 · `latest_verdict` 992 ·
+  `price_summary` 905 · `holding` 668 · `latest_price` 538 · everything else under 450.
+- **Where the remaining weight is:** news is **68%** of the slimmed payload and scales as
+  companies × 6 articles. That is the quantified case for the news-digest pipeline discussed with
+  the user — compressing article bodies into a rolling per-company digest is the only remaining
+  large win here, and it is deliberately *not* part of this pass (it needs its own AI call and its
+  own derisking; see the discussion recorded in `plan.md` → "Source citations per reply" and the
+  digest question).
+- [x] Tests: 4 new integration tests asserting the payload keeps its shape — page-only and
+  duplicated fields stay dropped, free-text caps hold, the per-company article cap is respected,
+  the latest verdict is the *latest* one, and a never-analyzed company yields no verdict entry.
+  These exist specifically so the payload can't quietly drift back to the full dict.
+
 ### Post-Phase-5 Addition #4 — Chat Source Citations
 Requested directly by the user (2026-08-05): *"in the chat, for each answer give me the articles it
 got the information from."* Small and self-contained — one new prompt version, one nullable column,
@@ -1236,6 +1312,25 @@ only* have used visible data; citations show *which* visible data each answer ac
   instead of assumed); not addressed by it: still no fundamentals, still one AI call, still no
   validated edge. Treat current verdicts as a research starting point, not a trusted answer,
   until real track-record data accumulates over weeks/months.
+- **A failed AI call costs the same budget slot as a successful one.** `rate_limiter.allow()`
+  counts every `provider_call_log` row regardless of `status`, and `chat_service`/`ai_service` both
+  write a failure row on `ProviderError`. That is correct behavior (a rejected request generally
+  did consume provider quota), but it means anything that makes a call *fail* — an oversized
+  prompt hitting a token-per-minute limit, a flaky network — silently eats from the same daily
+  Gemini budget the user's own on-demand evaluations draw on, while returning nothing. This is the
+  concrete reason NFR-10 exists. Note the Gemini paths do **not** consult the circuit breaker
+  (that is wired only for Finnhub/Alpha Vantage in `provider_orchestrator`), so repeated chat
+  failures burn quota but cannot trip a breaker that would block verdicts outright.
+- **Chat grounding truncates silently at `chat_max_tracked_companies` (40), ordered by
+  `Company.id`** — so if the user ever tracks more than 40 companies, chat would tell them it
+  "can only discuss companies tracked here" about a company that genuinely *is* tracked, which
+  breaks the honesty of the grounding guarantee rather than just trimming tokens. Latent today (6
+  companies tracked) and left as-is deliberately, because the right fix is a design change, not a
+  bigger number: send a **thin roster of every tracked company** (ticker/name/category/price/
+  verdict, ~1 line each) plus full detail only for the companies the question actually mentions,
+  matched by ticker/name against the message and recent history. That keeps grounding complete at
+  any watchlist size while making the common single-company question far cheaper than it is today.
+  Worth building if the tracked set grows past ~15, or alongside the news-digest pipeline.
 - **A clickable chat citation is a claim the app makes on its own behalf** — if the model authored
   the URL, that claim could be a convincing fabrication (real-looking domain, dead link), which is
   worse than no citation at all because it *looks* verified. Mitigated structurally rather than by
@@ -1371,7 +1466,10 @@ app/
     live_price_service.py            — poll_and_record(): one /quote poll -> a "5m" price_bars
                                         row (post-Phase-5)
     chat_service.py                  — send_message()/list_messages(); grounds every reply in
-                                        every tracked company's wiki_service.assemble() data (post-Phase-5).
+                                        every tracked company's wiki_service.assemble() data (post-Phase-5),
+                                        slimmed to a purpose-built subset by _slim_for_grounding()
+                                        + _latest_verdicts() (token-efficiency pass 2026-08-05,
+                                        NFR-10 — sizes tunable via settings.chat_*).
                                         Addition #4 adds article reference-id stamping + server-side
                                         citation resolution (FR-48) — the id map is chat-local, so
                                         wiki_service.assemble()'s shared return value is unchanged

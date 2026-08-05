@@ -8,6 +8,7 @@ export const queryKeys = {
   wiki: (ticker: string) => ['wiki', ticker.toUpperCase()] as const,
   watchlist: () => ['watchlist'] as const,
   search: (query: string) => ['search', query] as const,
+  tickerSearch: (query: string) => ['ticker-search', query] as const,
   analyses: (ticker: string) => ['analyses', ticker.toUpperCase()] as const,
   holdings: () => ['holdings'] as const,
   priceHistory: (ticker: string, interval: string) => ['price-history', ticker.toUpperCase(), interval] as const,
@@ -30,6 +31,16 @@ export function useSearch(query: string) {
   return useQuery({
     queryKey: queryKeys.search(query),
     queryFn: () => api.search(query),
+    enabled: query.trim().length > 0,
+  })
+}
+
+// Local ticker_directory autocomplete (FR-34) -- separate from useSearch (live Finnhub proxy).
+// Safe to fire per keystroke since it never touches a provider.
+export function useTickerSearch(query: string) {
+  return useQuery({
+    queryKey: queryKeys.tickerSearch(query),
+    queryFn: () => api.searchTickers(query),
     enabled: query.trim().length > 0,
   })
 }

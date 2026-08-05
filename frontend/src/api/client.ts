@@ -9,6 +9,7 @@ import type {
   PriceBar,
   PromoteResult,
   SearchResult,
+  TickerSuggestion,
   Wiki,
   WatchlistSummary,
 } from './types'
@@ -57,6 +58,12 @@ export const api = {
   getWatchlist: () => apiFetch<WatchlistSummary[]>('/watchlist'),
 
   search: (query: string) => apiFetch<SearchResult[]>(`/companies/search?q=${encodeURIComponent(query)}`),
+
+  // Local-only autocomplete for the Add Holding form (spec.md FR-34) -- reads the cached
+  // ticker_directory, never a live provider, so it's safe to call on every keystroke. Distinct
+  // from search() above, which proxies Finnhub live.
+  searchTickers: (query: string, limit = 10) =>
+    apiFetch<TickerSuggestion[]>(`/tickers/search?q=${encodeURIComponent(query)}&limit=${limit}`),
 
   promote: (ticker: string) =>
     apiFetch<PromoteResult>(`/watchlist/${encodeURIComponent(ticker)}/promote`, { method: 'POST' }),

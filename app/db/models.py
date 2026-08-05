@@ -205,6 +205,27 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TickerDirectory(Base):
+    """Local cache of the tradable US symbol universe (Post-Phase-5 Addition #2) -- backs the
+    Add Holding type-ahead (spec.md FR-34/FR-35) so autocomplete never spends live provider
+    search quota per keystroke. Bulk-refreshed weekly from Finnhub's /stock/symbol listing,
+    confirmed free-tier accessible (it 302-redirects to a downloadable JSON of ~31k US
+    symbols). Deliberately not FK'd to companies: it's a discovery index of every listed
+    symbol, most of which the app has never fetched a profile for.
+    """
+
+    __tablename__ = "ticker_directory"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(255))
+    exchange: Mapped[str | None] = mapped_column(String(32))
+    security_type: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ProviderCallLog(Base):
     __tablename__ = "provider_call_log"
     __table_args__ = (

@@ -11,6 +11,7 @@ from app.api.routers import (
     price_history,
     refresh,
     search,
+    tickers,
     watchlist,
     wiki,
 )
@@ -36,3 +37,4 @@ app.include_router(refresh.router)
 app.include_router(analysis.router)
 app.include_router(outcomes.router)
 app.include_router(search.router)
+app.include_router(tickers.router)

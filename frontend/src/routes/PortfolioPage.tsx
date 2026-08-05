@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useHoldings, useRemoveHolding, useUpsertHolding } from '../api/hooks'
 import { ApiError } from '../api/client'
 import { Skeleton } from '../components/Skeleton'
+import { TickerCombobox } from '../components/TickerCombobox'
 
 // Personal holdings tracking (Post-Phase-5 addition) -- deliberately scoped to shares + cost
 // basis only, per the user's explicit decision: no tax lots, no realized-gains accounting, no
@@ -101,12 +102,7 @@ export function PortfolioPage() {
         onSubmit={handleSubmit}
         className="mb-8 grid grid-cols-2 gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 sm:grid-cols-4"
       >
-        <input
-          value={ticker}
-          onChange={(event) => setTicker(event.target.value.toUpperCase())}
-          placeholder="Ticker"
-          className="col-span-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none sm:col-span-1"
-        />
+        <TickerCombobox value={ticker} onChange={setTicker} className="col-span-2 sm:col-span-1" />
         <input
           value={shares}
           onChange={(event) => setShares(event.target.value)}

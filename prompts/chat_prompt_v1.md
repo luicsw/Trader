@@ -28,6 +28,17 @@ editing this one in place.
   conversational aid for follow-up questions ("what about the one before that"), not data the
   model should treat as ground truth about prices/verdicts (that only ever comes from
   `{{TRACKED_COMPANIES_JSON}}`, freshly assembled on every call).
+- **The grounding payload is a purpose-built subset of `wiki_service.assemble()`, not the whole
+  dict** (`chat_service._slim_for_grounding`, token-efficiency pass 2026-08-05). Chat is the only
+  prompt here whose size scales with how many companies the user tracks, and it is rebuilt on
+  every message, so the rendered `wiki_sections` prose (`overview`, `key_metrics`, `news_digest`)
+  is dropped — each one restated data already present as structured fields, costing tokens per
+  message to say the same thing twice. Also dropped: `logo_url`, `coverage_tier`, and article
+  `url`s (citations resolve server-side from reference ids, so a URL in the payload is something
+  the model could echo as if it had read the page). **Added** in the same pass: `latest_verdict`
+  per company — the instructions below have always told the model to ground comparisons in each
+  company's latest verdict, but `assemble()` never carried one, so that instruction pointed at
+  data that wasn't there. Sizes are tunable via `settings.chat_*`.
 
 ## Template
 
@@ -54,8 +65,9 @@ useful answer here, not a deflection.
 
 When asked to compare or rank tracked companies (e.g. "what's the best tech stock I'm tracking
 right now"), filter to the relevant subset from the list below (by category/sector) and give a
-real, specific recommendation among THAT SUBSET — grounded in each company's latest verdict,
-price action, and news, not a generic answer. If the user holds a position in a company you
+real, specific recommendation among THAT SUBSET — grounded in each company's `latest_verdict`
+(present only for companies that have actually been analyzed; say so plainly when it is absent
+rather than guessing a verdict), price action, and news, not a generic answer. If the user holds a position in a company you
 discuss, take it into account (e.g. "you're already up 12% on X since your cost basis") the
 same way the verdict engine does, without being asked.
 

@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     watchlist_default_refresh_interval_minutes: int = 20
     scheduler_interval_seconds: int = 300
 
+    # Ticker directory (Post-Phase-5 Addition #2) -- the local autocomplete index is bulk-
+    # refreshed weekly, deliberately far slower than the price/news cadence: the symbol
+    # universe barely changes day to day, and one bulk pull costs a single provider slot.
+    ticker_directory_refresh_interval_seconds: int = 604800
+
     # AI pipeline (Phase 4). gemini-flash-latest is a moving alias (spec.md open decision #2)
     # -- kept as a config knob rather than hardcoded so it can be pinned to an explicit
     # version later without a code change, and the exact model used per call is stamped into
@@ -37,6 +42,21 @@ class Settings(BaseSettings):
     # a burst of chat questions must never starve scheduled verdicts, on-demand analysis, or
     # critiques, all of which are the app's core purpose.
     gemini_chat_budget_fraction: float = 0.2
+
+    # Chat grounding payload size (token-efficiency pass, 2026-08-05). Chat builds the largest
+    # prompt in this app -- one entry per tracked company, reassembled on *every* message -- so
+    # unlike the once-daily verdict call it is the one path that can hit a token-per-minute
+    # limit or slow down while the user is waiting. Recent news is ~2/3 of the payload, so these
+    # are the real dials: lower them to make each message cheaper, raise them for richer
+    # answers. Deliberately config, not hardcoded, because it is a quality/cost tradeoff only
+    # the user can judge -- same reasoning as the budget fractions above.
+    # NOTE: 6 is the effective ceiling for articles-per-company -- wiki_service.assemble() reads
+    # 6 (ingest_service.recent_news limit), so raising this alone has no effect.
+    chat_news_articles_per_company: int = 6
+    chat_article_summary_chars: int = 400
+    chat_description_chars: int = 300
+    chat_max_tracked_companies: int = 40
+    chat_max_history_messages: int = 20
 
     # Verdict track record: checks whether verdicts/confidence are actually calibrated
     # against what price did afterward, rather than trusting the AI's self-reported

@@ -7,7 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import settings
 from app.db.session import SessionLocal
-from app.services import outcome_service, refresh_service
+from app.services import outcome_service, refresh_service, ticker_directory_service
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -24,6 +24,14 @@ def _run_evaluate_outcomes_job() -> None:
     db = SessionLocal()
     try:
         outcome_service.evaluate_pending_outcomes(db)
+    finally:
+        db.close()
+
+
+def _run_refresh_ticker_directory_job() -> None:
+    db = SessionLocal()
+    try:
+        ticker_directory_service.refresh_directory(db)
     finally:
         db.close()
 
@@ -51,6 +59,13 @@ def start() -> None:
         "interval",
         seconds=settings.outcome_scheduler_interval_seconds,
         id="evaluate_outcomes",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_refresh_ticker_directory_job,
+        "interval",
+        seconds=settings.ticker_directory_refresh_interval_seconds,
+        id="refresh_ticker_directory",
         replace_existing=True,
     )
     _scheduler.start()

@@ -172,3 +172,61 @@ def test_search_symbols_no_matches_is_not_an_error():
     client = FinnhubClient(api_key="test-key")
 
     assert client.search_symbols("zzzznomatch") == []
+
+
+@respx.mock
+def test_list_symbols_follows_redirect_and_normalizes():
+    # /stock/symbol 302-redirects to a downloadable JSON file on the free tier (confirmed
+    # live) -- this asserts the client follows that redirect and normalizes the payload,
+    # skipping rows without a symbol.
+    respx.get("https://finnhub.io/api/v1/stock/symbol").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "https://static2.finnhub.io/file/exchange/USf.json"}
+        )
+    )
+    respx.get("https://static2.finnhub.io/file/exchange/USf.json").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"symbol": "AAPL", "description": "Apple Inc", "mic": "XNAS", "type": "Common Stock"},
+                {"symbol": "", "description": "junk row", "mic": "X", "type": "Common Stock"},
+            ],
+        )
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    symbols = client.list_symbols()
+
+    assert symbols == [
+        {"symbol": "AAPL", "name": "Apple Inc", "exchange": "XNAS", "security_type": "Common Stock"}
+    ]
+
+
+@respx.mock
+def test_list_symbols_non_list_response_is_empty():
+    respx.get("https://finnhub.io/api/v1/stock/symbol").mock(
+        return_value=httpx.Response(200, json={"error": "unexpected"})
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    assert client.list_symbols() == []
+
+
+@respx.mock
+def test_list_symbols_auth_failure_raises_permanent_error():
+    respx.get("https://finnhub.io/api/v1/stock/symbol").mock(return_value=httpx.Response(401))
+    client = FinnhubClient(api_key="bad-key")
+
+    with pytest.raises(PermanentProviderError):
+        client.list_symbols()
+
+
+@respx.mock
+def test_list_symbols_timeout_raises_transient_error():
+    respx.get("https://finnhub.io/api/v1/stock/symbol").mock(
+        side_effect=httpx.TimeoutException("boom")
+    )
+    client = FinnhubClient(api_key="test-key")
+
+    with pytest.raises(TransientProviderError):
+        client.list_symbols()

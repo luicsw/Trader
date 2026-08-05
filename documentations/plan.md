@@ -196,6 +196,17 @@ triggers are safe no-ops.
   UPDATE` against the unique constraints above — a mid-refresh crash can't corrupt data.
 - **Freshness always visible**: every API response carries `last_updated` timestamps so
   staleness is shown, never hidden.
+- **Prompt payload discipline** *(token-efficiency pass, 2026-08-05)*: `wiki_service.assemble()`
+  is shaped for the wiki *page* — logos, article URLs, rendered `wiki_sections` prose — and is the
+  shared single-source-of-truth read path, so **each AI call site sends its own purpose-built
+  subset rather than the whole dict, and the trimming lives at the call site, never in
+  `assemble()`**. Concretely: no field may restate another in the same payload (the rendered
+  `overview`/`key_metrics`/`news_digest` sections duplicate structured fields already present),
+  free text is length-capped, payloads that scale with tracked-company count are capped and
+  config-tunable, and prompt JSON uses compact separators. The reason is budget rather than
+  tidiness: the rate limiter counts *every* logged call regardless of outcome, so a prompt large
+  enough to get rejected on a token limit spends a slot from the same daily Gemini budget the
+  user's own on-demand analyses draw on — and returns nothing for it.
 
 ### AI pipeline (Gemini)
 1. `ai_service.build_prompt(ticker)` calls the shared `wiki_service.assemble(ticker)`.
@@ -332,6 +343,29 @@ Chat runs on its own lowest-priority slice of the Gemini budget
 watchlist analyses, on-demand verdicts, or critiques. Note the interaction with the benchmark
 design below: grounding on "every tracked company" is precisely why a benchmark ticker needs to
 be excluded from the tracked set rather than just promoted.
+
+#### Grounding payload is a subset, not the whole page dict (token-efficiency pass, 2026-08-05)
+Chat is the only prompt in this app whose size grows with how much the user tracks, and it is
+rebuilt from scratch on **every message** — which makes it the one place where prompt bloat has a
+real cost, and the one place it was actually happening. It was sending the entire
+`wiki_service.assemble()` dict per company, including three rendered `wiki_sections` bodies that
+restate structured fields sitting in the same payload (`news_digest` → the headlines already in
+`recent_news`; `key_metrics` → price/market-cap/sector; `overview` → name/exchange/sector). Now
+slimmed in `chat_service._slim_for_grounding()`: sections, `logo_url`, `coverage_tier`, and article
+URLs dropped, free text capped, compact JSON. Measured on the real dev database (6 companies, 30
+articles): **~8,400 → ~4,260 tokens per message, a 49% cut.**
+
+Two things worth recording about that pass. First, the verdict/critique path was **already** lean —
+`ai_service.wiki_to_prompt_data()` has always mapped `assemble()` down to a purpose-built subset —
+so this was a chat-only problem, not a systemic one. Second, it surfaced a capability gap rather
+than just waste: the chat prompt has always told the model to ground comparisons in "each company's
+latest verdict", but `assemble()` never carried a verdict (the page fetches its verdict banner
+separately), so that instruction pointed at absent data. Chat now gets the latest `ai_analyses` row
+per company in one `DISTINCT ON` query, and is told to say so plainly when a company has never been
+analyzed instead of guessing one.
+
+After the pass, **news is 68% of what's left**, scaling as companies × 6 articles — which is the
+quantified case for the digest idea below, and the reason it's the only remaining large win here.
 
 #### Source citations per reply (user request, 2026-08-05)
 Every chat answer should show **which articles it drew on**, so a claim in the chat panel is
@@ -719,6 +753,21 @@ loading-not-optimistic state for "Analyze with AI" since it's a real async call.
   heuristic synthesis with no backtesting behind them yet. Treat it the same way the existing
   "AI's investment judgment is unproven" risk (below) treats the verdict: a research input, not
   a trusted number, until real elapsed time lets it be checked against actual prices.
+- **A failed AI call costs the same budget slot as a successful one** — the rate limiter counts
+  every logged call regardless of status (correct: a rejected request generally did consume provider
+  quota), so anything that makes a call fail, including a prompt too large for a token-per-minute
+  limit, quietly eats from the same daily Gemini budget the user's own on-demand evaluations need.
+  This is why prompt payload discipline is a reliability mechanic above and not a style preference.
+  Note Gemini calls don't consult the circuit breaker (it's wired for Finnhub/Alpha Vantage only),
+  so repeated failures burn quota but can't trip a breaker that would block verdicts outright.
+- **Chat grounding silently truncates at 40 tracked companies** (ordered by `companies.id`). Past
+  that, chat would claim it "can only discuss companies tracked here" about a company that genuinely
+  is tracked — a correctness problem with the grounding guarantee, not merely a token one. Latent
+  today at 6 companies. The right fix isn't a bigger cap: send a thin roster of *every* tracked
+  company plus full detail only for the ones the question actually names (matched against the
+  message and recent history), which keeps grounding complete at any size while making the common
+  single-company question much cheaper. Worth doing past ~15 tracked companies, or alongside the
+  news digest.
 - **A chat citation the user can click is a claim the app is making on its own behalf** — if the
   model authored the URL, that claim can be a convincing fabrication (real-looking domain, dead
   link). Mitigated structurally, not by prompt wording: the model cites prompt-assigned reference

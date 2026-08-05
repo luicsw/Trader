@@ -96,6 +96,45 @@ class FinnhubClient(DataProvider):
             if item.get("symbol")
         ]
 
+    def list_symbols(self, exchange: str = "US") -> list[dict]:
+        """Bulk symbol listing backing the local ticker directory (spec.md FR-34) -- confirmed
+        free-tier accessible: /stock/symbol responds with a 302 redirect to a downloadable JSON
+        of the full US symbol universe (~31k rows), so this one call needs follow_redirects and
+        a longer timeout than the small per-ticker calls above. Normalized to
+        {symbol, name, exchange, security_type}; rows without a symbol are skipped. An empty
+        list is treated as a normal (not error) outcome, like the other list-returning methods.
+        """
+        try:
+            response = self._client.get(
+                "/stock/symbol",
+                params={"exchange": exchange, "token": self._api_key},
+                follow_redirects=True,
+                timeout=60.0,
+            )
+        except httpx.TimeoutException as exc:
+            raise TransientProviderError("Finnhub symbol listing timed out") from exc
+        except httpx.TransportError as exc:
+            raise TransientProviderError(f"Finnhub symbol listing failed: {exc}") from exc
+
+        self._raise_for_status(response, exchange)
+        data = response.json()
+        if not isinstance(data, list):
+            return []
+        symbols = []
+        for item in data:
+            symbol = item.get("symbol")
+            if not symbol:
+                continue
+            symbols.append(
+                {
+                    "symbol": symbol,
+                    "name": item.get("description") or None,
+                    "exchange": item.get("mic") or None,
+                    "security_type": item.get("type") or None,
+                }
+            )
+        return symbols
+
     def _get(self, path: str, ticker: str, params: dict) -> dict | list:
         try:
             response = self._client.get(path, params={**params, "token": self._api_key})
