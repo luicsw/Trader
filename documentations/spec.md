@@ -2,15 +2,19 @@
 
 **Status:** Phase 0 through Phase 5 functionally complete, plus "Post-Phase-5 Addition #1"
 (categories, holdings, live chart, chat) complete and the token-efficiency pass complete.
-**"Post-Phase-5 Addition #2" is in progress: its first two sub-features — ticker directory /
-autocomplete and portfolio income projection — are ✅ DONE (2026-08-05);** only the (dormant)
-second-LLM Groq forecast remains. "Post-Phase-5 Addition #3" (observability, data
-retention, alerts, backtest vs. benchmark, fundamentals ingestion) and "Post-Phase-5 Addition #4"
-(chat source citations) specced but not started. Phase 6 not started · **Suite: 241/241 green,
-all 10 migrations round-trip** (migration `0010` = `ticker_directory`) · **Last updated:**
-2026-08-05
-(Phase 5's UI and the new Add-Holding combobox have not been visually/interactively verified in a
-real browser — see the relevant sections below.)
+**"Post-Phase-5 Addition #2" is ✅ COMPLETE: all three sub-features — ticker directory /
+autocomplete, portfolio income projection (both 2026-08-05), and the second-LLM Groq forecast
+(2026-08-06, shipped **dormant**) — are built.** The Groq forecast's infrastructure is merged
+and switched off behind a missing `GROQ_API_KEY`; its **activation checklist is outstanding**
+(see "Groq activation" in §9) but does not hold this addition open or block Phase 6.
+"Post-Phase-5 Addition #3" (observability, data retention, alerts, backtest vs. benchmark,
+fundamentals ingestion) and "Post-Phase-5 Addition #4" (chat source citations) specced but not
+started. Phase 6 not started · **Suite: 268/268 green with `GROQ_API_KEY` unset, all 12
+migrations round-trip** (migration `0010` = `ticker_directory`, `0011` = `groq` enum, `0012` =
+`price_forecasts`) · **Last updated:** 2026-08-06
+(Phase 5's UI, the Add-Holding combobox, and the new forecast panel's dormant/standby state
+have not been visually/interactively verified in a real browser — see the relevant sections
+below.)
 **Two FR-21 routes are still unbuilt:** `/compare` (scheduled, Phase 6 T6.3) and `/settings`
 (never in any task list until Addition #3 — see that section).
 
@@ -411,7 +415,7 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `holdings` *(post-Phase-5 addition)* | company_id, shares, cost_basis_per_share, acquired_at, notes, created_at, updated_at | UNIQUE `(company_id)` — one row per company, not tax lots (explicit scope decision) |
 | `chat_messages` *(post-Phase-5 addition; `cited_sources` planned — Addition #4)* | role (user\|assistant), content, created_at, **cited_sources** (JSONB, nullable) | Append-only, linear, single-user — no multi-conversation concept. `cited_sources` is populated on assistant rows only, same shape as `ai_analyses.cited_sources`, resolved server-side from prompt reference ids (FR-48) so a stored URL is always a real `news_articles` URL |
 | `price_bars` interval `"5m"` *(post-Phase-5 addition)* | same columns as the `"1d"` rows above, one bucket per 5 minutes | Aggregated server-side from repeated `/quote` polls (Finnhub's free tier has no intraday candle endpoint) — not a new table, just a new `interval` value in the existing `price_bars` table |
-| `price_forecasts` *(planned — Post-Phase-5 Addition #2; table+migration ship dormant)* | company_id, horizon_days, expected_low, expected_high, confidence, rationale, model, trigger, generated_at | Append-only, one row per horizon per generation; INDEX `(company_id, horizon_days, generated_at DESC)`. `confidence` is **per-horizon**, sourced from the prompt's per-horizon field (FR-30) — not one value copied across five rows. **Created even with no Groq key** (FR-33a): an empty table is inert, and deferring the migration is how Phase 4's `gemini` enum bug happened. Stays empty until activation |
+| `price_forecasts` *(built dormant — Post-Phase-5 Addition #2, migration `0012`)* | company_id, horizon_days, expected_low, expected_high, confidence, rationale, model, trigger, generated_at | Append-only, one row per horizon per generation; INDEX `(company_id, generated_at DESC)`. `confidence` is **per-horizon**, sourced from the prompt's per-horizon field (FR-30) — not one value copied across five rows. **Created even with no Groq key** (FR-33a): an empty table is inert, and deferring the migration is how Phase 4's `gemini` enum bug happened. Stays empty until activation |
 | `ticker_directory` *(built — Post-Phase-5 Addition #2, migration `0010`)* | symbol, name, exchange, security_type, updated_at | UNIQUE `(symbol)`; bulk-refreshed weekly, backs local autocomplete (FR-34). Source confirmed free-tier: Finnhub `/stock/symbol?exchange=US` (302-redirects to a downloadable JSON of ~31k US symbols) — no Alpha Vantage fallback needed. Plain `ILIKE` search, no `pg_trgm` |
 | `alerts` *(planned — Post-Phase-5 Addition #3)* | company_id, alert_type (verdict_change\|sell_target_hit\|stop_loss_hit), message, triggered_at, acknowledged, acknowledged_at | Not append-only — `acknowledged` is a real state transition; "one open alert per `(company_id, alert_type)`" enforced in `alert_service`, not a DB constraint (FR-41–43) |
 | `push_subscriptions` *(planned, stretch — Post-Phase-5 Addition #3)* | endpoint, p256dh_key, auth_key, created_at | UNIQUE `(endpoint)`; only needed if the Web Push extension (FR-44) is built |
@@ -446,8 +450,8 @@ All tables live in Postgres, managed via Alembic migrations under `app/db/migrat
 | `GET /chat/messages` *(post-Phase-5; response extended — Addition #4)* | Full chat history, each assistant message carrying its `cited_sources` (FR-49) | shared credential | Backs `/chat`; citations are read from the stored column, not recomputed |
 | `POST /chat` *(post-Phase-5; response extended — Addition #4)* | Send a chat message, get a grounded AI reply **plus the sources it drew on** (FR-47) | shared credential | Grounded to tracked companies only (user decision); lowest Gemini budget priority; citations add no extra AI call (FR-51) |
 | `GET /portfolio/projected-income?tickers=&horizon=` *(built — Post-Phase-5 Addition #2)* | Expected profit at 30/60/90-day horizons, whole portfolio / single stock / selected subset (FR-27–29) | shared credential | Pure computation over existing `holdings` + latest `ai_analyses`; no new AI call. Both params are optional narrowing filters — bare call returns all holdings × all three horizons (FR-29) |
-| `POST /companies/{ticker}/forecast` *(planned — Post-Phase-5 Addition #2; **dormant**)* | On-demand multi-horizon (30/60/90/180/360d) high/low forecast via Groq (FR-30–32) | shared credential | Watchlist-only, on-demand-only, mirrors `/critique`'s gating; own independent Groq budget. **With no Groq key: `503` "Groq API key not configured"** (FR-33a) — deliberately distinct from the `400` a lookup-tier ticker gets and from the quota-exhaustion response, so the three causes are never conflated |
-| `GET /companies/{ticker}/forecasts` *(planned — Post-Phase-5 Addition #2)* | Latest + historical forecast rows | shared credential | Backs a new wiki-page forecast panel. Works with no Groq key — returns an empty list, since reading history needs no provider (FR-33a) |
+| `POST /companies/{ticker}/forecast` *(built dormant — Post-Phase-5 Addition #2)* | On-demand multi-horizon (30/60/90/180/360d) high/low forecast via Groq (FR-30–32) | shared credential | Watchlist-only, on-demand-only, mirrors `/critique`'s gating; own independent Groq budget. **With no Groq key: `503` "Groq API key not configured"**, checked *before* the watchlist tier check (FR-33a) — deliberately distinct from the `400` a lookup-tier ticker gets and from the `429` quota-exhaustion response, so the three causes are never conflated |
+| `GET /companies/{ticker}/forecasts` *(built dormant — Post-Phase-5 Addition #2)* | Latest + historical forecast rows, grouped by generation | shared credential | Backs the wiki-page forecast panel. Works with no Groq key — returns `{ticker, latest: null, history: []}`, since reading history needs no provider (FR-33a) |
 | `GET /tickers/search?q=&limit=` *(built — Post-Phase-5 Addition #2)* | Local-only ticker/name autocomplete for the Add Holding form (FR-34–35) | shared credential | No live provider call; distinct from `/companies/search` (which proxies Finnhub live) |
 | `POST /internal/refresh-ticker-directory` *(built — Post-Phase-5 Addition #2)* | Cron-triggered weekly bulk refresh of `ticker_directory` from Finnhub `/stock/symbol` | shared credential | Same dual-trigger pattern as every other job (NFR-1) |
 | `POST /internal/prune-price-bars` *(planned — Post-Phase-5 Addition #3)* | Cron-triggered deletion of `"5m"` bars older than `price_bars_retention_days` (FR-38) | shared credential | Never touches `"1d"` rows; same dual-trigger pattern (NFR-1) |
@@ -471,7 +475,7 @@ standalone in Phase 0 before any backend code was written (see §9).
 | `prompts/verdict_critique_prompt_v1.md` | Adversarial second opinion on an existing verdict | same wiki dict + the `ai_analyses` row being critiqued | `{agrees_with_verdict_direction, biggest_weakness, revised_price_targets{...}, revised_confidence, rationale}` |
 | `prompts/chat_prompt_v1.md` *(post-Phase-5; superseded by v2 as the live default once Addition #4 lands, kept per NFR-5)* | Grounded chat reply — restricted to tracked companies only | list of every tracked company's wiki dict + chat history + the new user message | `{reply}` |
 | `prompts/chat_prompt_v2.md` *(planned — Addition #4)* | Same grounded reply, plus per-answer source attribution | same inputs, with each article stamped with a reference id (`[N1]`, `[N2]`, …) (FR-48) | `{reply, cited_sources: [{type: news\|price\|verdict\|metric\|position, ticker, ref}]}` — for `news`, `ref` is a prompt-assigned article id the backend resolves to headline/source/url/published_at; the model never emits URLs |
-| `prompts/forecast_prompt_v1.md` *(planned — Post-Phase-5 Addition #2; **written but UNVALIDATED**)* | Multi-horizon (30/60/90/180/360d) expected low/high forecast, second independent model (Groq) | `wiki_service.assemble(ticker)` dict | `{forecasts: [{horizon_days, expected_low, expected_high, confidence, rationale}]}` — confidence is per-horizon (FR-30), not one value for the set |
+| `prompts/forecast_prompt_v1.md` *(built dormant — Post-Phase-5 Addition #2; **written but UNVALIDATED**)* | Multi-horizon (30/60/90/180/360d) expected low/high forecast, second independent model (Groq) | `wiki_service.assemble(ticker)` dict | `{forecasts: [{horizon_days, expected_low, expected_high, confidence, rationale}]}` — confidence is per-horizon (FR-30), not one value for the set. json_object mode enforces valid JSON but not the schema — shape validated in `forecast_service` after parsing. UNVALIDATED against a live model until activation |
 
 **The forecast prompt is the one exception to the sentence above** (FR-33b): with no Groq key
 obtainable, it is authored from the same design principles as the validated prompts but has never
@@ -894,7 +898,8 @@ lowest-risk first, each step not depending on the next.
     trivially — the UNIQUE index on `symbol` already serves prefix matches, so the extension
     would be speculative complexity. Round-trips (`downgrade 0010→0009 → upgrade head`) clean.
     **Note:** Addition #4 (chat citations) had also pencilled in "migration 0010"; whichever
-    shipped first took the number — this did, so Addition #4's column becomes `0011`.
+    shipped first took the number — this did, and the Groq forecast (below) then took `0011`
+    (enum) and `0012` (`price_forecasts`), so Addition #4's column becomes `0013` when built.
   - [x] `services/ticker_directory_service.py::refresh_directory()` — chunked bulk `ON
     CONFLICT(symbol)` upsert (deduped by symbol first, since one INSERT can't touch a conflict
     target twice and the dump lists some symbols under two MICs). Rate-limited/circuit-broken
@@ -949,8 +954,8 @@ lowest-risk first, each step not depending on the next.
   - **Not verified — standing caveat:** no interactive browser this session, so the panel's
     rendering/chip-toggling is confirmed by type-check + build, not by clicking it.
 
-- [ ] **Multi-horizon forecast — second LLM (Groq)** (build third — new provider, new prompt,
-  highest complexity) — **SHIPS DORMANT: no API key obtainable as of 2026-08-05.**
+- [x] **Multi-horizon forecast — second LLM (Groq)** (build third — new provider, new prompt,
+  highest complexity) — **SHIPPED DORMANT (2026-08-06): no API key obtainable as of 2026-08-05.**
 
   Everything in this block is buildable and verifiable *without* a key and is what "done" means
   for this addition. The tasks that genuinely need a live key are split out into "Groq activation
@@ -958,51 +963,58 @@ lowest-risk first, each step not depending on the next.
   Phase 6 can start without the key ever arriving. **Non-negotiable acceptance condition for every
   task here: with `GROQ_API_KEY` unset, the app must behave exactly as it does today** — same
   startup, same routes, same scheduler, same 210+ green tests, same migration round-trip (NFR-9,
-  FR-33a). If any of those change, the standby has been implemented wrong.
-  - [ ] ~~Derisk standalone first, same habit as Phase 0~~ — **impossible without a key; deferred
+  FR-33a). If any of those change, the standby has been implemented wrong. **Verified: full suite
+  268/268 green with `GROQ_API_KEY` unset, 12 migrations round-trip. See
+  [tests/groq-forecast-dormant.md](tests/groq-forecast-dormant.md).**
+  - [x] ~~Derisk standalone first, same habit as Phase 0~~ — **impossible without a key; deferred
     to the activation checklist below, not skipped.** Recorded honestly as the one place this
     project's derisk-before-code habit is inverted: the client, prompt, and parsing are written on
-    assumption (FR-33b). `scripts/test_groq_prompt.py` still gets written *now*, mirroring
+    assumption (FR-33b). `scripts/test_groq_prompt.py` written *now*, mirroring
     `scripts/test_gemini_prompt.py` (`--fixture`/`--model`/`--repeat` flags, reusing the existing
     `scripts/fixtures/*.json`), so activation is one command rather than a fresh build.
-  - [ ] `settings.groq_api_key: str | None = None` + `groq_model` / `groq_rate_limit_per_window` /
-    `groq_rate_limit_window_seconds` config knobs, plus a `.env.example` entry with a comment
-    saying the key is not yet obtainable and the feature is dormant without it. Same
-    optional-key shape the other three providers already use — the model id is picked from Groq's
-    docs rather than a live call, so re-check it during activation (§12).
-  - [ ] `GET /status` gains a `features` map (`{"forecast": <bool>}`) derived from key presence
+  - [x] `settings.groq_api_key: str | None = None` + `groq_model` (`llama-3.3-70b-versatile`) /
+    `groq_rate_limit_per_window` / `groq_rate_limit_window_seconds` config knobs, plus a
+    `.env.example` entry with a comment saying the key is not yet obtainable and the feature is
+    dormant without it. Same optional-key shape the other three providers already use — the model
+    id is picked from Groq's docs rather than a live call, so re-check it during activation (§12).
+  - [x] `GET /status` gains a `features` map (`{"forecast": <bool>}`) derived from key presence
     (FR-33a) — the single source the frontend uses to decide whether the button is live
-  - [ ] **`ProviderName.groq` + `ALTER TYPE providername ADD VALUE 'groq'` migration — do this
-    before the client.** Called out as its own task because Phase 4 hit precisely this bug with
+  - [x] **`ProviderName.groq` + `ALTER TYPE providername ADD VALUE 'groq'` migration (`0011`) — did
+    this before the client.** Called out as its own task because Phase 4 hit precisely this bug with
     `gemini`: the Python enum member was added, the Postgres `ALTER TYPE` was forgotten, and the
     very first rate-limiter check died on `invalid input value for enum providername` (fixed by
     migration `0006` — see Phase 4's bug list). The rate limiter, circuit breaker, and
     `provider_call_log` writer all key off this enum, so *no* Groq call can succeed until both
-    halves exist. Copy `0006`'s pattern verbatim: `ALTER TYPE providername ADD VALUE IF NOT
+    halves exist. Copied `0006`'s pattern verbatim: `ALTER TYPE providername ADD VALUE IF NOT
     EXISTS 'groq'` on upgrade, documented no-op on downgrade (Postgres has no `DROP VALUE`).
-    **Ships even though nothing will use it yet** — inert without a key, and this is the exact bug
+    **Ships even though nothing uses it yet** — inert without a key, and this is the exact bug
     class that bites when deferred.
-  - [ ] `providers/groq_client.py` — own retry/backoff + rate-limit bucket + circuit breaker,
-    entirely independent of Gemini's budget (FR-33), plus an `is_available()`/key-presence check
-    that callers consult *before* any network attempt, so a missing key never reaches the retry or
-    circuit-breaker machinery (nothing to log, nothing to trip)
-  - [ ] `prompts/forecast_prompt_v1.md` — schema-forced JSON, all five horizons in one call to
-    conserve quota, per-horizon `confidence` (FR-30)
-  - [ ] `price_forecasts` table + migration (FR-31)
-  - [ ] `services/forecast_service.py::build_forecast_prompt()` / `generate_forecast()`
-  - [ ] `POST /companies/{ticker}/forecast` — watchlist-only, on-demand-only, mirroring
+  - [x] `providers/groq_client.py` — own retry/backoff + rate-limit bucket, entirely independent
+    of Gemini's budget (FR-33), plus an `is_available()`/key-presence check that callers consult
+    *before* any network attempt, so a missing key never reaches the retry machinery (nothing to
+    log, nothing to trip). Built on Groq's OpenAI-compatible endpoint with plain `httpx` (no new
+    dependency), JSON-object mode, same Transient/Permanent taxonomy as every other client.
+  - [x] `prompts/forecast_prompt_v1.md` — schema-forced JSON, all five horizons in one call to
+    conserve quota, per-horizon `confidence` (FR-30). **UNVALIDATED** — written without a live
+    derisk run (no key), so it's an assumption until activation (FR-33b).
+  - [x] `price_forecasts` table + migration (`0012`) (FR-31)
+  - [x] `services/forecast_service.py::build_forecast_prompt()` / `generate_forecast()` /
+    `list_forecasts()` — reuses `ai_service`'s template helpers against the shared
+    `wiki_service.assemble()` data; validates the parsed response into exactly the five expected
+    horizons (missing horizon / `high < low` / malformed field → `PermanentProviderError` → 502).
+  - [x] `POST /companies/{ticker}/forecast` — watchlist-only, on-demand-only, mirroring
     `/critique`'s gating exactly (FR-30, FR-32), **plus the key-absent `503` branch checked before
     the watchlist check** so the message names the real blocker (FR-33a)
-  - [ ] `GET /companies/{ticker}/forecasts` — works regardless of key state, empty list when
+  - [x] `GET /companies/{ticker}/forecasts` — works regardless of key state, empty structure when
     nothing has been generated
-  - [ ] Frontend: forecast panel on the wiki page (per-horizon low/high — consult the
-    `dataviz` skill for how to render a range-band across 5 horizons before finalizing),
-    "Generate Forecast" button gated the same way "Get Second Opinion" is for lookup-tier
-    tickers, **and additionally disabled with a "Groq API key not configured" tooltip when
-    `features.forecast` is false** — visibly on standby rather than hidden, so the feature's
-    existence and its blocker are both obvious (FR-33a). The panel renders an explicit
-    "not configured" empty state, not a spinner or a blank box.
-  - **Verify (all achievable with no key — this is the addition's real exit criterion):**
+  - [x] Frontend: `ForecastPanel` on the wiki page (per-horizon low/high rendered as a
+    single-series horizontal range-band per the `dataviz` skill — one hue, direct low/high labels,
+    per-horizon confidence), "Generate Forecast" button gated the same way "Get Second Opinion" is
+    for lookup-tier tickers, **and additionally disabled with a "Groq API key not configured"
+    tooltip when `features.forecast` is false** — visibly on standby rather than hidden, so the
+    feature's existence and its blocker are both obvious (FR-33a). The panel renders an explicit
+    "on standby / not configured" empty state, not a spinner or a blank box.
+  - **Verify (all achievable with no key — this is the addition's real exit criterion): ✅ DONE**
     unit tests for prompt assembly and response parsing against a *recorded/hand-written* Groq
     response fixture (mocked, like every other provider's parser tests); an integration test
     asserting the key-absent path returns `503` with a clear message and writes **no**
@@ -1035,12 +1047,13 @@ lowest-risk first, each step not depending on the next.
   - [ ] Update this spec's status header and §11 open decision to reflect Groq as live rather than
     dormant
 
-- **Verify (whole addition):** each sub-feature's own verify step above passes; full test suite
-  still green **with `GROQ_API_KEY` unset**; all three UI additions visually/interactively confirmed
-  in a real browser — for the forecast panel that means confirming the *disabled* standby state
-  reads clearly (button greyed, tooltip explains why, panel shows "not configured"), since the live
-  state can't be seen yet (carrying forward the same "open it yourself" caveat Phase 5 and its
-  post-phase addition both flagged as outstanding).
+- **Verify (whole addition): ✅** each sub-feature's own verify step above passes; full test suite
+  green **with `GROQ_API_KEY` unset** (268/268), 12 migrations round-trip. **Still outstanding:**
+  all three UI additions visually/interactively confirmed in a real browser — for the forecast
+  panel that means confirming the *disabled* standby state reads clearly (button greyed, tooltip
+  explains why, panel shows "not configured"), since the live state can't be seen yet (carrying
+  forward the same "open it yourself" caveat Phase 5 and its post-phase additions both flagged as
+  outstanding — no interactive browser this session).
 - **Definition of done for this addition:** ticker directory and income projection fully working;
   Groq infrastructure merged and dormant, with its activation checklist outstanding. Groq being
   dormant does **not** hold this addition open and does **not** block Phase 6.
@@ -1573,9 +1586,11 @@ A `fundamentals` table still does not exist — Phase 4 deliberately did not add
 phase's scope-decision note above); the prompt's `financials_summary_last_4_periods` stays an
 honest empty array until a future phase adds real fundamentals ingestion.
 
-Nothing Groq-related exists in the tree yet either — this map reflects current state, and
-Addition #2 hasn't started. When it lands, the Groq pieces (`providers/groq_client.py`,
-`services/forecast_service.py`, `prompts/forecast_prompt_v1.md`,
-`scripts/test_groq_prompt.py`, the `price_forecasts` + `providername` migrations, the wiki-page
-forecast panel) will be present but **dormant** — marked as such here, so nobody reading the map
-later mistakes "the files exist" for "the feature works" (FR-33b).
+The Groq pieces now exist but are **dormant** (Addition #2, 2026-08-06): `providers/groq_client.py`,
+`services/forecast_service.py`, `prompts/forecast_prompt_v1.md`, `scripts/test_groq_prompt.py`,
+`api/routers/forecast.py` + `api/routers/status.py`, the `price_forecasts` table (migration `0012`)
+and the `groq` `providername` value (migration `0011`), and the frontend
+`components/ForecastPanel.tsx`. All present, all inert without a `GROQ_API_KEY` — marked as such
+here so nobody reading the map later mistakes "the files exist" for "the feature works" (FR-33b).
+Its prompt and response parsing remain **unvalidated against a live model** until the activation
+checklist in §9 is run.

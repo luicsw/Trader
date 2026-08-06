@@ -15,6 +15,7 @@ passed/failed, and — where applicable — what broke and how it got fixed.
 | Post-Phase-4 — Historical price backfill | [historical-backfill.md](historical-backfill.md) | 146/146 pytest + live verification with a real Alpha Vantage key |
 | 5 — Frontend core | [phase-5.md](phase-5.md) | 161/161 backend pytest + frontend verified via typecheck/lint/proxy only — **no browser available this session** |
 | Post-Phase-5 — Categories, Holdings, Live Chart, Chat | [post-phase-5-additions.md](post-phase-5-additions.md) | 210/210 pytest (+49) + live verification of the live chart and grounded chat against real APIs |
+| Post-Phase-5 Addition #2 — Multi-Horizon Forecast (Groq, **dormant**) | [groq-forecast-dormant.md](groq-forecast-dormant.md) | 268/268 pytest (+26) with `GROQ_API_KEY` unset; 12 migrations round-trip. Prompt/parsing unvalidated (no key) — activation checklist outstanding |
 
 ## Test count growth across phases
 

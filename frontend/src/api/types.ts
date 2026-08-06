@@ -188,6 +188,40 @@ export interface ApiErrorBody {
   detail: string
 }
 
+// Multi-horizon forecast (Post-Phase-5 Addition #2, second LLM / Groq). SHIPS DORMANT: the
+// feature is switched off until the backend has a GROQ_API_KEY, surfaced via Status.features
+// below so the "Generate Forecast" button renders disabled rather than hidden.
+export interface Forecast {
+  horizon_days: number
+  expected_low: number
+  expected_high: number
+  confidence: number
+  rationale: string
+}
+
+export interface ForecastGeneration {
+  generated_at: string
+  model: string
+  trigger: string
+  forecasts: Forecast[]
+}
+
+export interface ForecastsResponse {
+  ticker: string
+  latest: ForecastGeneration | null
+  history: ForecastGeneration[]
+}
+
+// GET /status capability flags -- `forecast` is true only when the backend has a Groq key
+// (spec.md FR-33a). The single source the frontend uses to enable/disable the forecast action.
+export interface StatusFeatures {
+  forecast: boolean
+}
+
+export interface Status {
+  features: StatusFeatures
+}
+
 export interface ChatMessage {
   id: number
   role: 'user' | 'assistant'

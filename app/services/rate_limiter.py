@@ -25,6 +25,14 @@ _BUDGETS = {
         "gemini_rate_limit_per_window",
         "gemini_rate_limit_window_seconds",
     ),
+    # Groq's bucket is wholly independent of Gemini's (spec.md FR-33) so the forecast pass can
+    # never starve the verdict/critique budget. Inert while dormant -- nothing calls allow() for
+    # it until GROQ_API_KEY is set, since forecast_service short-circuits on the missing key
+    # before ever touching the limiter.
+    ProviderName.groq: (
+        "groq_rate_limit_per_window",
+        "groq_rate_limit_window_seconds",
+    ),
 }
 
 

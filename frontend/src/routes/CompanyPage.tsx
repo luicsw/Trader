@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAnalyses, usePromote, useRemoveFromWatchlist, useWiki } from '../api/hooks'
 import type { Holding, WikiSectionKey } from '../api/types'
+import { ForecastPanel } from '../components/ForecastPanel'
 import { FreshnessIndicator } from '../components/FreshnessIndicator'
 import { PriceChart } from '../components/PriceChart'
 import { Skeleton } from '../components/Skeleton'
@@ -96,6 +97,8 @@ export function CompanyPage() {
       />
 
       <PriceChart ticker={wiki.ticker} />
+
+      <ForecastPanel ticker={wiki.ticker} coverageTier={wiki.coverage_tier} />
 
       <PositionPanel holding={wiki.holding} ticker={wiki.ticker} />
 

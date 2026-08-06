@@ -71,5 +71,19 @@ class Settings(BaseSettings):
     # tickers don't spend Alpha Vantage's scarce ~25/day free-tier budget for nothing.
     backfill_min_bars_threshold: int = 50
 
+    # Second AI provider (Groq) -- multi-horizon buy/sell forecast (Post-Phase-5 Addition #2).
+    # SHIPS DORMANT: no API key obtainable as of 2026-08-05, so groq_api_key is None exactly
+    # like the other three optional providers and a missing key MUST be a non-event -- the app
+    # boots, the scheduler starts, and every existing route behaves identically without it
+    # (spec.md NFR-9, FR-33a). The forecast pass is on-demand-only, so nothing scheduled ever
+    # touches Groq. groq_model is picked from Groq's docs rather than a live call (no key to
+    # test with), so it must be re-checked during activation (spec.md §12). Its rate-limit
+    # bucket is wholly independent of Gemini's so it can never starve the verdict/critique
+    # budget (FR-33).
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_rate_limit_per_window: int = 100
+    groq_rate_limit_window_seconds: int = 86400
+
 
 settings = Settings()

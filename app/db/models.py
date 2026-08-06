@@ -38,6 +38,11 @@ class ProviderName(str, enum.Enum):
     finnhub = "finnhub"
     alpha_vantage = "alpha_vantage"
     gemini = "gemini"
+    # Second AI provider (Post-Phase-5 Addition #2), dormant until GROQ_API_KEY is set. The
+    # Postgres half of this enum is added by migration 0011 -- adding the Python member without
+    # the ALTER TYPE is exactly the bug Phase 4 hit with 'gemini' (see migration 0006), so both
+    # halves ship together.
+    groq = "groq"
 
 
 class Sentiment(str, enum.Enum):
@@ -314,3 +319,35 @@ class VerdictOutcome(Base):
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     analysis: Mapped["AiAnalysis"] = relationship()
+
+
+class PriceForecast(Base):
+    """One row per horizon per Groq forecast generation (Post-Phase-5 Addition #2) --
+    append-only, never overwritten, same philosophy as ai_analyses. A single "Generate
+    Forecast" action produces five rows (30/60/90/180/360 days). `confidence` is per-horizon
+    (matching the prompt's per-horizon field): a single value for the whole set would just be
+    copied into all five rows, and confidence genuinely should decay from 30d to 360d.
+    `model` is stamped per row so a later model swap is auditable (spec.md §12 model-drift
+    risk). SHIPS DORMANT: nothing writes here until GROQ_API_KEY is set -- an empty table costs
+    nothing, and this is exactly the migration Phase 4 proved is a mistake to defer.
+    """
+
+    __tablename__ = "price_forecasts"
+    __table_args__ = (
+        Index("ix_price_forecasts_company_generated_at", "company_id", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    horizon_days: Mapped[int] = mapped_column(Integer)
+    expected_low: Mapped[float] = mapped_column(Float)
+    expected_high: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(String)
+    model: Mapped[str] = mapped_column(String(128))
+    # On-demand only by design (never scheduled) -- kept as a column for symmetry with
+    # ai_analyses and in case a future entry point ever adds another trigger.
+    trigger: Mapped[str] = mapped_column(String(16), default="on_demand")
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    company: Mapped["Company"] = relationship()

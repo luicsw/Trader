@@ -5,11 +5,14 @@ import type {
   ApiErrorBody,
   ChatMessage,
   Critique,
+  Forecast,
+  ForecastsResponse,
   Holding,
   PriceBar,
   ProjectedIncome,
   PromoteResult,
   SearchResult,
+  Status,
   TickerSuggestion,
   Wiki,
   WatchlistSummary,
@@ -112,4 +115,20 @@ export const api = {
 
   sendChatMessage: (message: string) =>
     apiFetch<ChatMessage>('/chat', { method: 'POST', body: JSON.stringify({ message }) }),
+
+  // Capability flags (spec.md FR-33a) -- drives whether the forecast action is offered live.
+  getStatus: () => apiFetch<Status>('/status'),
+
+  // Reading forecast history needs no provider, so this works even while Groq is dormant --
+  // it just returns an empty structure (spec.md FR-33a).
+  getForecasts: (ticker: string) =>
+    apiFetch<ForecastsResponse>(`/companies/${encodeURIComponent(ticker)}/forecasts`),
+
+  // On-demand, watchlist-only. Returns 503 while Groq is dormant (no key) -- the UI gates on
+  // Status.features.forecast so this is only called when it can actually succeed.
+  generateForecast: (ticker: string) =>
+    apiFetch<{ ticker: string; forecasts: (Forecast & { id: number; model: string; generated_at: string })[] }>(
+      `/companies/${encodeURIComponent(ticker)}/forecast`,
+      { method: 'POST' },
+    ),
 }

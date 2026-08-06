@@ -14,6 +14,8 @@ export const queryKeys = {
   projectedIncome: () => ['projected-income'] as const,
   priceHistory: (ticker: string, interval: string) => ['price-history', ticker.toUpperCase(), interval] as const,
   chatMessages: () => ['chat-messages'] as const,
+  status: () => ['status'] as const,
+  forecasts: (ticker: string) => ['forecasts', ticker.toUpperCase()] as const,
 }
 
 export function useWiki(ticker: string) {
@@ -140,6 +142,30 @@ export function useRemoveHolding() {
 
 export function useChatMessages() {
   return useQuery({ queryKey: queryKeys.chatMessages(), queryFn: api.getChatMessages })
+}
+
+// Capability flags (spec.md FR-33a). Long staleTime -- key presence doesn't change within a
+// session, so there's no need to refetch it on every wiki-page mount.
+export function useStatus() {
+  return useQuery({ queryKey: queryKeys.status(), queryFn: api.getStatus, staleTime: Infinity })
+}
+
+export function useForecasts(ticker: string) {
+  return useQuery({
+    queryKey: queryKeys.forecasts(ticker),
+    queryFn: () => api.getForecasts(ticker),
+    enabled: ticker.length > 0,
+  })
+}
+
+export function useGenerateForecast(ticker: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.generateForecast(ticker),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.forecasts(ticker) })
+    },
+  })
 }
 
 export function useSendChatMessage() {

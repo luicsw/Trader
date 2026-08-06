@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.routers import (
     analysis,
     chat,
+    forecast,
     health,
     holdings,
     outcomes,
@@ -12,6 +13,7 @@ from app.api.routers import (
     price_history,
     refresh,
     search,
+    status,
     tickers,
     watchlist,
     wiki,
@@ -37,6 +39,8 @@ app.include_router(price_history.router)
 app.include_router(chat.router)
 app.include_router(refresh.router)
 app.include_router(analysis.router)
+app.include_router(forecast.router)
 app.include_router(outcomes.router)
 app.include_router(search.router)
 app.include_router(tickers.router)
+app.include_router(status.router)
